@@ -147,8 +147,8 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def process_data(self, frame, gain=-1.0, usetexp=False, skysub=False,
-                     flip=0, pixscale=0.0, rakey='ra', deckey='dec',
+    def process_data(self, frame, gain=-1.0, usetexp=False, zerosky=None,
+                     flip=None, pixscale=0.0, rakey='ra', deckey='dec',
                      trimsec=None, verbose=True):
 
         """
@@ -199,20 +199,13 @@ class CCDSet(list):
         if trimsec is not None:
             x1, y1, x2, y2 = trimsec
             tmp = self[frame].cutout_xy(x1, y1, x2, y2, verbose=verbose)
-            tmp.header['trim'] = \
-                'Trim data section is [%d:%d,%d:%d] ([xrange,yrange])' % \
-                (x1, x2, y1, y2)
-            if verbose:
-                print('   Trimmed data to section [xrange,yrange] '
-                      '[%d:%d,%d:%d]' % (x1, x2, y1, y2))
         else:
             tmp = WcsHDU(self[frame].data, self[frame].header, wcsverb=False)
 
         """ Bias-subtract if requested """
         if self.bias is not None:
-            biasdata = self.bias.data
-            tmp.data -=  biasdata
-            biasmean = biasdata.mean()
+            tmp -= self.bias
+            biasmean = self.bias.data.mean()
             if (self.hext == 0):
                 keystr = 'biassub'
             else:
@@ -264,18 +257,18 @@ class CCDSet(list):
     
         """ Apply the flat-field correction if requested """
         if self.flat is not None:
-            flatdata = self.flat.data
-            tmp.data /= flatdata
-            flatmean = flatdata.mean()
+            tmp /= self.flat
             
             """
             Set up a bad pixel mask based on places where the 
             flat frame = 0, since dividing by zero gives lots of problems
             """
+            flatdata = self.flat.data
             zeromask = flatdata==0
             
             """ Correct for any zero pixels in the flat-field frame """
             tmp.data[zeromask] = 0
+            flatmean = flatdata.mean()
             if (self.hext == 0):
                 keystr = 'flatcor'
             else:
@@ -322,20 +315,18 @@ class CCDSet(list):
                   self.darkskyflat.infile)
 
         """ Subtract the sky level if requested """
-        if skytozero is not None:
-            tmp.sky_to_zero(method=skytozero, verbose=verbose)
+        if zerosky is not None:
+            tmp.sky_to_zero(method=zerosky, verbose=verbose)
             if (hext == 0):
-                keystr = 'skysub'
+                keystr = 'zerosky'
             else:
-                keystr = 'skysub'+str(hext)
-            tmp.header[keystr] = ('For %s, subtracted mean sky level of %f' % \
+                keystr = 'zerosky'+str(hext)
+            tmp.header[keystr] = ('%s: subtracted constant sky level of %f' %
                                   (hdustr,m))
     
         """ Flip if requested """
-        if flip == 1:
-            tmp.data = tmp.data.T[::-1,::-1]
-        if flip == 3:
-            tmp.data = tmp.data[:,::-1]
+        if flip is not None:
+            tmp.flip(flip)
     
         """ Add a very rough WCS if requested """
         if pixscale > 0.0:
@@ -350,7 +341,7 @@ class CCDSet(list):
 
     def median_combine(self, outfile=None, method='median', goodmask=None,
                        trimsec=None, biasfile=None, flatfile=None, gain=None,
-                       normalize=None, skytozero=False, NaNmask=False,
+                       normalize=None, zerosky=None, NaNmask=False,
                        verbose=True):
         """ 
         This is one of the primary methods of the CCDSet class.  It will:
@@ -416,18 +407,15 @@ class CCDSet(list):
                 mask = np.isfinite(tmp.data)
                 normfac = tmp.normalize(method=normalize, mask=mask)
                 print('    Normalizing by %f' % normfac)
-            tmpf = tmp.data.copy()
-            del(tmp)
 
-            """ Set to zero median, if desired """
-            if zeromedian:
-                print('    Subtracting the median from %s' %
-                      self[i].infile)
-                tmpf -= np.median(tmpf, axis=None)
-
-            stack[count] = tmpf.copy()
+            """ Set the sky to zero if requested """
+            if zerosky is not None:
+                skyval = tmp.sky_to_zero(zerosky)
+                
+            """ Put the processed data into the stack """
+            stack[count] = tmp.data.copy()
             count += 1
-            del(tmpf)
+            del(tmp)
         
         print('')
 
@@ -467,7 +455,8 @@ class CCDSet(list):
     
     # -----------------------------------------------------------------------
 
-    def make_bias(self, outfile='Bias.fits', trimsec=None, gain=None):
+    def make_bias(self, outfile='Bias.fits', trimsec=None, gain=None,
+                  **kwargs):
         """ 
 
         This function median-combines the data to create a master dark/bias
@@ -481,7 +470,7 @@ class CCDSet(list):
 
         """
 
-        hdu = self.median_combine(outfile=outfile, trimsec=trimsec)
+        hdu = self.median_combine(outfile=outfile, trimsec=trimsec, **kwargs)
 
         if hdu is not None:
             return hdu
@@ -649,16 +638,18 @@ class CCDSet(list):
             mask = indlist != i
             goodmask = np.zeros(self.nfiles, dtype=bool)
             goodmask[indlist[mask]] = True
-            skyhdu = self.make_flat(outfile=None, biasfile=biasfile,
-                                    goodmask=goodmask, NaNmask=NaNmask)
-            print(np.isfinite(skyhdu.data).sum() / skyhdu.data.size)
-            skyhdu.data[~np.isfinite(skyhdu.data)] = 0.
-            print(np.median(skyhdu.data))
-            scalefac = np.median(data) / np.median(skyhdu.data)
-            print('Scaling sky-flat data for %s by %f' %
-                  (hdu.infile, scalefac))
-            data -= skyhdu.data * scalefac
-            outlist.append(pf.PrimaryHDU(data, hdu.header))
+            # Code below was original
+            # skyhdu = self.make_flat(outfile=None, biasfile=biasfile,
+            #                         goodmask=goodmask, NaNmask=NaNmask)
+            # skyhdu.data[~np.isfinite(skyhdu.data)] = 0.
+            # scalefac = np.median(data) / np.median(skyhdu.data)
+            # print('Scaling sky-flat data for %s by %f' %
+            #       (hdu.infile, scalefac))
+            skyhdu = self.median_combine(zerosky='sigclip',
+                                         goodmask=goodmask, NaNmask=NaNmask)
+            hdu.sigma_clip()
+            outdata = orig[i].data - hdu.mean_clip - skyhdu.data
+            outlist.append(pf.PrimaryHDU(outdata, hdu.header))
 
         return CCDSet(outlist)
 
