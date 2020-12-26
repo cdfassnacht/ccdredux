@@ -28,7 +28,7 @@ class CCDSet(list):
 
     def __init__(self, inlist, hext=0, wcsext=None, texpkey=None, gainkey=None,
                  rdnoisekey=None, coaddkey=None, filtkey=None, wcsverb=False,
-                 **kwargs):
+                 verbose=True, **kwargs):
         """
 
         Instantiates a CCDSet object by reading in the relevant data sets
@@ -51,7 +51,7 @@ class CCDSet(list):
 
         """ Set default values """
         self.texp = np.ones(self.nfiles)
-        self.gain = np.ones(self.nfiles)
+        self.gain = -1. * np.ones(self.nfiles)
         self.bias = None
         self.flat = None
         self.fringe = None
@@ -73,12 +73,34 @@ class CCDSet(list):
                 else:
                     print('WARNING: %s keyword not found in header of file %s' %
                           (gainkey, tmp.infile))
-            if isinstance(f, str):
-                print(os.path.basename(tmp.infile), self.texp[i], self.gain[i])
-            else:
-                print(i, self.texp[i], self.gain[i])
             self.append(tmp)
 
+        """ Summarize the inputs """
+        if verbose:
+            self.print_summary()
+            
+    # -----------------------------------------------------------------------
+
+    def print_summary(self):
+        """
+
+        Summarizes the input file characteristics
+
+        """
+
+        print('File            Object          texp(s) gain ')
+        print('--------------- --------------- ------- -----')
+        for hdu, texp, gain in zip(self, self.texp, self.gain):
+            infile = os.path.basename(hdu.infile)
+            if infile[-5:] == '.fits':
+                infile = infile[:-5]
+            if 'OBJECT' in hdu.header.keys():
+                obj = hdu.header['object']
+            else:
+                obj = 'N/A'
+            print('%-15s %-15s %7.2f %5.2f' % (infile, obj, texp, gain))
+        return
+    
     # -----------------------------------------------------------------------
 
     def read_calfile(self, filename, file_description, hext=0, verbose=True):
@@ -147,198 +169,6 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def process_data(self, frame, gain=-1.0, usetexp=False, zerosky=None,
-                     flip=None, pixscale=0.0, rakey='ra', deckey='dec',
-                     trimsec=None, verbose=True):
-
-        """
-
-        This function applies calibration corrections to the data.
-        All of the calbration steps are by default turned off (keywords set
-         to None).
-        To apply a particular calibration step, set the appropriate keyword.
-        The possible steps, along with their keywords are:
-
-          Keyword      Calibration step
-          ----------  ----------------------------------
-          bias          Bias subtraction
-          gain          Convert from ADU to electrons if set to value > 0
-                          NB: Gain must be in e-/ADU
-          flat          Flat-field correction
-          fringe        Fringe subtraction
-          darksky      Dark-sky flat correction
-          skysub        Subtract mean sky level if keyword set to True
-          texp_key     Divide by exposure time (set keyword to fits header
-                        keyword name, e.g., 'exptime')
-          flip          0 => no flip
-                        1 => PFCam style (flip x then rotate -90), 
-                        2 => P60 CCD13 style (not yet implemented)
-                        3 => flip x-axis
-          pixscale     If >0, apply a rough WCS using this pixel scale (RA and
-                         Dec come from telescope pointing info in fits header)
-          rakey        FITS header keyword for RA of telescope pointing.
-                         Default = 'ra'
-          deckey       FITS header keyword for Dec of telescope pointing.
-                         Default = 'dec'
-        
-         Required inputs:
-          frame
-
-         Optional inputs (additional to those in the keyword list above):
-          trimsec - a four-element list or array: [x1, y1, x2, y2] if something
-                    smaller than the full frame is desired.  The coordinates
-                    define the lower-left (x1, y1) and upper right (x2, y2)
-                    corners of the trim section.
-
-        """
-
-        """ Set up convenience variables """
-        hdustr = 'HDU%d' % self.hext
-        
-        """ Trim the data if requested """
-        if trimsec is not None:
-            x1, y1, x2, y2 = trimsec
-            tmp = self[frame].cutout_xy(x1, y1, x2, y2, verbose=verbose)
-        else:
-            tmp = WcsHDU(self[frame].data, self[frame].header, wcsverb=False)
-
-        """ Bias-subtract if requested """
-        if self.bias is not None:
-            tmp -= self.bias
-            biasmean = self.bias.data.mean()
-            if (self.hext == 0):
-                keystr = 'biassub'
-            else:
-                keystr = 'biassub%d' % self.hext
-            tmp.header[keystr] = 'Bias frame for %s is %s with mean %f' % \
-                (hdustr, self.bias.infile, biasmean)
-            print('   Subtracted bias frame %s' % self.bias.infile)
-    
-        """ Convert to electrons if requested """
-        if gain > 0:
-            tmp.data *= gain
-            tmp.header['gain'] =  (1.0, 'Units are now electrons')
-            if (hext == 0):
-                keystr = 'ogain'
-            else:
-                keystr = 'ogain%d' % self.hext
-            tmp.header.set(keystr, gain, 'Original gain for %s in e-/ADU'
-                           % hdustr, after='gain')
-            tmp.header['bunit'] =  ('Electrons',
-                                    'Converted from ADU in raw image')
-            if (self.hext == 0):
-                keystrb1 = 'binfo_1'
-            else:
-                keystrb1 = 'binfo%d_1' % self.hext
-            keystrb1 = keystrb1.upper()
-            tmp.header[keystrb1] = \
-                'Units for %s changed to e- using gain=%6.3f e-/ADU' % \
-                (hdustr, gain)
-            if verbose:
-                print('    Converted units to e- using gain = %f' % gain)
-    
-        """ Divide by the exposure time if requested """
-        if usetexp:
-            tmp.data /= self.texp[frame]
-            if (self.hext == 0):
-                keystr = 'binfo_2'
-            else:
-                keystr = 'binfo'+str(self.hext)+'_2'
-            keystr = keystr.upper()
-            tmp.header['gain'] = (texp,
-                                  'If units are e-/s then gain=t_exp')
-            tmp.header['bunit'] = ('Electrons/sec','See %s header'
-                                   % keystr, keystr)
-            tmp.header.set(keystr,
-                           'Units for %s changed from e- to e-/s using '
-                           'texp=%7.2f' % (hdustr,texp), after=keystrb1)
-            print('   Converted units from e- to e-/sec using exposure '
-                  'time %7.2f' % texp)
-    
-        """ Apply the flat-field correction if requested """
-        if self.flat is not None:
-            tmp /= self.flat
-            
-            """
-            Set up a bad pixel mask based on places where the 
-            flat frame = 0, since dividing by zero gives lots of problems
-            """
-            flatdata = self.flat.data
-            zeromask = flatdata==0
-            
-            """ Correct for any zero pixels in the flat-field frame """
-            tmp.data[zeromask] = 0
-            flatmean = flatdata.mean()
-            if (self.hext == 0):
-                keystr = 'flatcor'
-            else:
-                keystr = 'flatcor%d' % hext
-            tmp.header[keystr] = \
-                'Flat field image for %s is %s with mean=%f' % \
-                (hdustr, self.flat.infile, flatmean)
-            print('   Divided by flat-field image: %s' % self.flat.infile)
-    
-        """ Apply the fringe correction if requested """
-        if self.fringe is not None:
-            fringedata = self.fringe.data
-            tmp.data -= fringedata
-            if (self.hext == 0):
-                keystr = 'fringcor'
-            else:
-                keystr = 'frngcor'+str(hext)
-            fringemean = fringedata.mean()
-            tmp.header[keystr] = \
-                'Fringe image for %s is %s with mean=%f' % \
-                (hdustr, fringe.infile, fringemean)
-            print('   Subtracted fringe image: %s' % fringe.infile)
-    
-        """ Apply the dark sky flat-field correction if requested """
-        if self.darkskyflat is not None:
-            dsflatdata = self.darkskyflat.data
-            tmp.data /= dsflatdata
-            dsflatmean = dsflatdata.mean()
-            """
-            Set up a bad pixel mask based on places where the flat frame = 0,
-            since dividing by zero gives lots of problems
-            """
-            dszeromask = dsflatdata==0
-            """ Correct for any zero pixels in the flat-field frame """
-            tmp.data[dszeromask] = 0
-            if (self.hext == 0):
-                keystr = 'dsflat'
-            else:
-                keystr = 'dflat'+str(hext)
-            tmp.header[keystr] = \
-                'Dark-sky flat image for %s is %s with mean=%f' % \
-                (hdustr, self.darkskyflat.infile, dsflatmeanmean)
-            print('    Divided by dark-sky flat: %s' %
-                  self.darkskyflat.infile)
-
-        """ Subtract the sky level if requested """
-        if zerosky is not None:
-            tmp.sky_to_zero(method=zerosky, verbose=verbose)
-            if (hext == 0):
-                keystr = 'zerosky'
-            else:
-                keystr = 'zerosky'+str(hext)
-            tmp.header[keystr] = ('%s: subtracted constant sky level of %f' %
-                                  (hdustr,m))
-    
-        """ Flip if requested """
-        if flip is not None:
-            tmp.flip(flip)
-    
-        """ Add a very rough WCS if requested """
-        if pixscale > 0.0:
-            if hext>0:
-                apply_rough_wcs(tmp, pixscale, rakey, deckey, self[0])
-            else:
-                apply_rough_wcs(tmp, pixscale, rakey, deckey)
-
-        return tmp
-    
-    # -----------------------------------------------------------------------
-
     def median_combine(self, outfile=None, method='median', goodmask=None,
                        trimsec=None, biasfile=None, flatfile=None, gain=None,
                        normalize=None, zerosky=None, NaNmask=False,
@@ -358,13 +188,6 @@ class CCDSet(list):
 
         """ Load any requested calibration files """
         self.load_calib(biasfile, flatfile)
-
-        """
-        Set up a fake gain array if no gain is given
-        """
-
-        if gain is None:
-            gain = np.ones(self.nfiles) * -1.
 
         """
         Set up the container to hold the data stack that will be used to
@@ -390,7 +213,7 @@ class CCDSet(list):
             print('Stack will have dimensions (%d, %d, %d)'
                   % (zsize, ysize, xsize))
 
-        """ Loop over the input files to create the stack """
+        """ Loop over the frames to create the stack """
         count = 0
         for i in range(self.nfiles):
             if not goodmask[i]:
@@ -400,7 +223,7 @@ class CCDSet(list):
                 print(' %s' % self[i].infile)
 
             """ Process the data (bias and gain only), if desired """
-            tmp = self.process_data(i, gain=gain[i], trimsec=trimsec)
+            tmp = self[i].process_data(gain=gain[i], trimsec=trimsec)
 
             """ Normalize if requested """
             if normalize is not None:
@@ -511,14 +334,13 @@ class CCDSet(list):
     
     # -----------------------------------------------------------------------
 
-    def apply_calib(self, outfiles=None, split=False,
+    def apply_calib(self, outfiles=None, trimsec=None,
                     biasfile=None, flatfile=None, fringefile=None,
-                    darkskyfile=None,
-                    skysub=False, gain=None, usetexp=None, 
-                    flip=0, pixscale=0.0, rakey='ra', deckey='dec',
-                    trimsec=None,
+                    darkskyfile=None, zerosky=None, flip=None,
+                    pixscale=0.0, rakey='ra', deckey='dec',
                     verbose=True):
         """
+
         Applies calibration corrections to the frames.
         All of the calibration steps are by default turned off (their
          associated keywords are set to None).
@@ -527,24 +349,19 @@ class CCDSet(list):
 
           Keyword      Calibration step
           ----------  ----------------------------------
-          biasfile     Bias subtraction
-          gain          Convert from ADU to electrons if set to value > 0
-                          NB: gain must be in e-/ADU
-          flatfile     Flat-field correction
+          biasfile    Bias subtraction
+          flatfile    Flat-field correction
           fringefile  Fringe subtraction
           darkskyfile Dark-sky flat correction
-          skysub        Subtract mean sky level if keyword set to True
-          texp_key     Divide by exposure time (set keyword to fits header name)
-          flip          0 => no flip
-                          1 => PFCam-style (flip x then rotate -90), 
-                          2 => P60 CCD13 style (not yet implemented)
-                          3 => flip x-axis
-          pixscale     If >0, apply a rough WCS using this pixel scale (RA and
-                           Dec come from telescope pointing info in fits header)
-          rakey         FITS header keyword for RA of telescope pointing.
-                          Default = 'ra'
-          deckey        FITS header keyword for Dec of telescope pointing.
-                          Default = 'dec'
+          skysub      Subtract mean sky level if keyword set to True
+          texp_key    Divide by exposure time (set keyword to fits header name)
+          flip        None => no flip
+          pixscale    If >0, apply a rough WCS using this pixel scale (RA and
+                        Dec come from telescope pointing info in fits header)
+          rakey       FITS header keyword for RA of telescope pointing.
+                        Default = 'ra'
+          deckey      FITS header keyword for Dec of telescope pointing.
+                        Default = 'dec'
         
          Required inputs:
 
@@ -560,9 +377,6 @@ class CCDSet(list):
         self.load_calib(biasfile, flatfile, fringefile, darkskyfile)
 
         """ Prepare to calibrate the data """
-        write_one_output_file = True
-        if gain is None:
-            gain = np.ones(self.nfiles) * -1.
         if verbose:
             print('')
             print('Processing files...')
@@ -570,17 +384,18 @@ class CCDSet(list):
 
         """ Loop through the frames, processing each one """
         outlist = []
-        for i in range(len(self)):
-            print('%s:' % self[i].infile)
-            tmp = self.process_data(i, gain=gain[i], usetexp=usetexp,
-                                    skysub=skysub,
-                                    flip=flip, pixscale=pixscale,
-                                    rakey=rakey, deckey=deckey,
-                                    trimsec=trimsec)
+        for i, hdu in enumerate(self):
+            tmp = hdu.process_data(trimsec=trimsec, bias=self.bias,
+                                   gain=self.gain[i], texp=self.texp[i],
+                                   flat=self.flat, fringe=self.fringe,
+                                   darkskyflat=self.darkskyflat,
+                                   zerosky=zerosky, flip=flip, 
+                                   pixscale=pixscale, rakey=rakey,
+                                   deckey=deckey, verbose=verbose)
 
             if outfiles is not None:
-                pf.PrimaryHDU(tmp.data, tmp.header).writeto(outfiles[i],
-                                                            overwrite=True)
+                tmp.writeto(outfiles[i])
+                print('   Wrote calibrated data to %s' % outfiles[i])
             else:
                 outlist.append(tmp)
             print('')
