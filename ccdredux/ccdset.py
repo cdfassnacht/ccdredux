@@ -90,8 +90,12 @@ class CCDSet(list):
 
         print('File            Object          texp(s) gain ')
         print('--------------- --------------- ------- -----')
+        count = 1
         for hdu, texp, gain in zip(self, self.texp, self.gain):
-            infile = os.path.basename(hdu.infile)
+            if hdu.infile is not None:
+                infile = os.path.basename(hdu.infile)
+            else:
+                infile = 'File %d' % count
             if infile[-5:] == '.fits':
                 infile = infile[:-5]
             if 'OBJECT' in hdu.header.keys():
@@ -99,6 +103,7 @@ class CCDSet(list):
             else:
                 obj = 'N/A'
             print('%-15s %-15s %7.2f %5.2f' % (infile, obj, texp, gain))
+            count += 1
         return
     
     # -----------------------------------------------------------------------
@@ -170,9 +175,9 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def median_combine(self, outfile=None, method='median', goodmask=None,
-                       trimsec=None, biasfile=None, flatfile=None, gain=None,
-                       normalize=None, zerosky=None, NaNmask=False,
-                       verbose=True):
+                       trimsec=None, biasfile=None, flatfile=None,
+                       usegain=False, normalize=None, zerosky=None,
+                       NaNmask=False, verbose=True):
         """ 
         This is one of the primary methods of the CCDSet class.  It will:
 
@@ -219,11 +224,13 @@ class CCDSet(list):
             if not goodmask[i]:
                 continue
             
-            if verbose:
-                print(' %s' % self[i].infile)
-
             """ Process the data (bias and gain only), if desired """
-            tmp = self[i].process_data(gain=gain[i], trimsec=trimsec)
+            if usegain:
+                gain = self.gain[i]
+            else:
+                gain = -1
+            tmp = self[i].process_data(gain=gain, trimsec=trimsec,
+                                       verbose=verbose)
 
             """ Normalize if requested """
             if normalize is not None:
@@ -325,7 +332,7 @@ class CCDSet(list):
 
         """  Call median_combine """
         hdu = self.median_combine(outfile=outfile, biasfile=biasfile,
-                                  gain=gain, normalize=normalize,
+                                  normalize=normalize,
                                   trimsec=trimsec,
                                   goodmask=goodmask, **kwargs)
 
@@ -334,8 +341,8 @@ class CCDSet(list):
     
     # -----------------------------------------------------------------------
 
-    def apply_calib(self, outfiles=None, trimsec=None,
-                    biasfile=None, flatfile=None, fringefile=None,
+    def apply_calib(self, outfiles=None, trimsec=None, biasfile=None,
+                    usegain=False, flatfile=None, fringefile=None,
                     darkskyfile=None, zerosky=None, flip=None,
                     pixscale=0.0, rakey='ra', deckey='dec',
                     verbose=True):
@@ -385,8 +392,13 @@ class CCDSet(list):
         """ Loop through the frames, processing each one """
         outlist = []
         for i, hdu in enumerate(self):
+            if usegain:
+                gain = self.gain[i]
+            else:
+                gain = -1
+
             tmp = hdu.process_data(trimsec=trimsec, bias=self.bias,
-                                   gain=self.gain[i], texp=self.texp[i],
+                                   gain=gain, texp=self.texp[i],
                                    flat=self.flat, fringe=self.fringe,
                                    darkskyflat=self.darkskyflat,
                                    zerosky=zerosky, flip=flip, 
@@ -413,7 +425,8 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def skysub_nir(self, biasfile=None, objmasklist=None, ngroup=5):
+    def skysub_nir(self, biasfile=None, objmasks=None, ngroup=5,
+                   outfiles=None, verbose=True):
         """
 
         Does the sky subtraction in the classic NIR imaging way, i.e., by
@@ -427,11 +440,11 @@ class CCDSet(list):
         originals
         """
         orig = []
-        if objmasklist is not None:
+        if objmasks is not None:
             NaNmask = True
             for i, hdu in enumerate(self):
                 orig.append(hdu.data.copy())
-                hdu.apply_pixmask(objmasklist[i], badval=1)
+                hdu.apply_pixmask(objmasks[i], badval=1)
         else:
             NaNmask = False
             for hdu in self:
@@ -441,6 +454,12 @@ class CCDSet(list):
         outlist = []
         dstep = int(floor((ngroup - 1) / 2.))
         for i, hdu in enumerate(self):
+            if verbose:
+                if hdu.infile is not None:
+                    filename = hdu.infile
+                else:
+                    filename = 'File %d' % (i + 1)
+                print('Sky subtraction for %s' % filename)
             data = orig[i]
             if i < dstep:
                 start = 0
@@ -453,24 +472,32 @@ class CCDSet(list):
             mask = indlist != i
             goodmask = np.zeros(self.nfiles, dtype=bool)
             goodmask[indlist[mask]] = True
-            # Code below was original
+            # Original code below (normalized inputs rather than subtracting
+            #    sky)
             # skyhdu = self.make_flat(outfile=None, biasfile=biasfile,
             #                         goodmask=goodmask, NaNmask=NaNmask)
             # skyhdu.data[~np.isfinite(skyhdu.data)] = 0.
             # scalefac = np.median(data) / np.median(skyhdu.data)
             # print('Scaling sky-flat data for %s by %f' %
             #       (hdu.infile, scalefac))
-            skyhdu = self.median_combine(zerosky='sigclip',
+            skyhdu = self.median_combine(zerosky='sigclip', verbose=False,
                                          goodmask=goodmask, NaNmask=NaNmask)
             hdu.sigma_clip()
             outdata = orig[i].data - hdu.mean_clip - skyhdu.data
-            outlist.append(pf.PrimaryHDU(outdata, hdu.header))
+            outlist.append(WcsHDU(outdata, hdu.header, verbose=False,
+                           wcsverb=False))
 
-        return CCDSet(outlist)
+        if outfiles is not None:
+            for hdu, ofile in zip(outlist, outfiles):
+                hdu.writeto(ofile)
+                if verbose:
+                    print('Wrote sky-subtracted data to %s' % ofile)
+        else:
+            return CCDSet(outlist)
 
     # -----------------------------------------------------------------------
 
-    def make_objmasks(self, nsig=1.5, bpmlist=None):
+    def make_objmasks(self, nsig=1., bpmlist=None):
         """
 
         Creates a list of object masks
