@@ -10,8 +10,9 @@ import numpy as np
 from math import floor
 
 from astropy.io import fits as pf
+from scipy.ndimage import filters
 
-from specim.imfuncs import WcsHDU
+from specim.imfuncs import WcsHDU, imfit
 
 pyversion = sys.version_info.major
 
@@ -192,7 +193,7 @@ class CCDSet(list):
         """
 
         """ Load any requested calibration files """
-        self.load_calib(biasfile, flatfile)
+        self.load_calib(biasfile, flatfile, verbose=verbose)
 
         """
         Set up the container to hold the data stack that will be used to
@@ -207,7 +208,7 @@ class CCDSet(list):
         if goodmask is not None:
             zsize = goodmask.sum()
         else:
-            goodmask = np.ones(self.files, dtype=bool)
+            goodmask = np.ones(self.nfiles, dtype=bool)
             zsize = self.nfiles
         stack = np.zeros((zsize, ysize, xsize))
 
@@ -247,28 +248,33 @@ class CCDSet(list):
             count += 1
             del(tmp)
         
-        print('')
+        if verbose:
+            print('')
 
         """ Actually form the median (or sum, if that was requested) """
         if method == 'sum':
             if NaNmask:
-                print('median_combine: Computing summed frame using NaN'
-                      ' masking')
-                print('    Can take a while...')
+                if verbose:
+                    print('median_combine: Computing summed frame using NaN'
+                          ' masking')
+                    print('    Can take a while...')
                 outdat = np.nansum(stack, axis=0)
             else:
-                print('median_combine: Computing summed frame (can take '
-                      'a while)...')
+                if verbose:
+                    print('median_combine: Computing summed frame (can take '
+                          'a while)...')
                 outdat = np.sum(stack, axis=0)
         else:
             if NaNmask:
-                print('median_combine: Computing median frame using NaN '
-                      'masking')
-                print('    Can take a while...')
+                if verbose:
+                    print('median_combine: Computing median frame using NaN '
+                          'masking')
+                    print('    Can take a while...')
                 outdat = np.nanmedian(stack, axis=0)
             else:
-                print('median_combine: Computing median frame (can take '
-                      'a while)...')
+                if verbose:
+                    print('median_combine: Computing median frame (can take '
+                          'a while)...')
                 outdat = np.median(stack, axis=0)
         del stack
 
@@ -278,7 +284,8 @@ class CCDSet(list):
         """ Write the output median file or return HDU """
         if outfile is not None:
             phdu.writeto(outfile, output_verify='ignore', overwrite=True)
-            print('    ... Wrote output to %s.' % outfile)
+            if verbose:
+                print('    ... Wrote output to %s.' % outfile)
             return None
         else:
             return phdu
@@ -381,7 +388,8 @@ class CCDSet(list):
         """
 
         """ Read in calibration frames if they have been selected """
-        self.load_calib(biasfile, flatfile, fringefile, darkskyfile)
+        self.load_calib(biasfile, flatfile, fringefile, darkskyfile,
+                        verbose=verbose)
 
         """ Prepare to calibrate the data """
         if verbose:
@@ -493,7 +501,7 @@ class CCDSet(list):
                 if verbose:
                     print('Wrote sky-subtracted data to %s' % ofile)
         else:
-            return CCDSet(outlist)
+            return CCDSet(outlist, verbose=False)
 
     # -----------------------------------------------------------------------
 
@@ -515,3 +523,160 @@ class CCDSet(list):
 
         return objmasks
 
+    # -----------------------------------------------------------------------
+
+    def align_crpix(self, radec=None, datasize=1500, fitsize=100, fwhmpix=10,
+                    filtersize=5, savexc=True, verbose=True, **kwargs):
+        """
+
+        Uses the CRPIX values as the initial guesses for the shifts between
+        the images, and then does a cross-correlation between the
+        shifted images.  The cross-correlation uses data from each image
+        that is centered at the requested (RA, Dec) location (assuming
+        the WCS is correct) and uses data within a region of size
+        datasize pixels centered on that location.  The results of the
+        cross-correlation are used to update the CRPIX values.
+        NOTE: These shifts are all in the native data frame and not in
+        a WCS-aligned orientation.
+
+        To summarize:
+          1. Cut out data centered at the requested (RA, Dec) and with
+             size datasize.  The default values, RA=None and Dec=None,
+             will center the data regions at the location designated by
+             the CRVAL keywords.
+             NOTE: There should be an astronomical object at the requested
+              (RA, Dec) location.
+          2. Cross-correlate the data cutouts
+          3. Fit a 2d Gaussian to the cross-correlation output
+          4. Use the offset of the Gaussian's centroid from the center of the
+             cross-correlated image to update the input CRPIX values.
+
+        """
+
+        if verbose:
+            print('Refining CRPIX values (can take a while)')
+            print('----------------------------------------')
+            
+        """
+        Get the (x,y) position corresponding to the requested (RA, Dec)
+        in the first image
+        """
+        hdu0 = self[0]
+        if radec is not None:
+            ra = radec[0]
+            dec = radec[1]
+        else:
+            hdr0 = self[0].header
+            ra = hdr0['crval1']
+            dec = hdr0['crval2']
+        xy0 = hdu0.wcsinfo.all_world2pix(ra, dec, 1)
+        dcent0 = np.array([xy0[0], xy0[1]])
+
+        """ Set up container for old CRPIX values """
+        ocrpix1 = np.zeros(self.nfiles)
+        ocrpix2 = np.zeros(self.nfiles)
+
+        """ Loop through the frames """
+        for i, hdu in enumerate(self):
+            if i == 0:
+                ocrpix1[i] = hdu.header['crpix1']
+                ocrpix2[i] = hdu.header['crpix2']
+                continue
+            
+            """
+            Get (x,y) position of requested (RA, Dec) and save original
+            CRPIX values
+            """
+            xy = hdu.wcsinfo.all_world2pix(ra, dec, 1)
+            dcent = np.array([xy[0], xy[1]])
+            hdr = hdu.header
+            ocrpix1[i] = hdr['crpix1']
+            ocrpix2[i] = hdr['crpix2']
+
+            """ Cross-correlate the data """
+            if verbose:
+                print('   Cross-correlating frames 0 and %d' % i)
+            xccent = np.array((int(hdu.data.shape[1]/2.),
+                               int(hdu.data.shape[0]/2.)))
+            xc = hdu0.cross_correlate(hdu, datacent=xccent, othercent=xccent,
+                                      datasize=datasize, **kwargs)
+            if savexc:
+                outfile = 'xc%d.fits' % i
+                xc.writeto(outfile)
+                if verbose:
+                    print('   Saved cross-correlation image to %s' % outfile)
+
+            """
+            Do a small median smoothing on the cross-correlated image to
+            get rid of possible cosmic-ray / bad-pixel overlaps
+            """
+            xc.data = filters.median_filter(xc.data, size=filtersize)
+
+            """
+            If the WCS is basically correct, then there should be a
+            peak in the cross-correlation image pretty close to the
+            position derived from taking the difference in the CRPIX
+            values.  Therefore fit to peak within a small box centered
+            at this position
+            """
+            dposcr = dcent - dcent0
+            x0 = (xc.data.shape[1]/2.) + dposcr[0]
+            y0 = (xc.data.shape[0]/2.) + dposcr[1]
+            print(x0, y0)
+            dx = int(fitsize / 2.)
+            xmin = int(x0 - dx)
+            xmax = int(xmin + fitsize)
+            ymin = int(y0 - dx)
+            ymax = int(ymin + fitsize)
+            data = xc.data[ymin:ymax, xmin:xmax]
+            
+            """ Fit to the cross-correlation peak """
+            if verbose:
+                print('   Fitting to cross-correlation peak')
+            fit = imfit.ImFit(data)
+            mod = fit.gaussians(dx, dx, fwhmpix=fwhmpix,
+                                fitbkgd=False, verbose=False,
+                                usemoments=False)
+            xfit = mod.x_mean + xmin
+            yfit = mod.y_mean + ymin
+            if verbose:
+                print('      x0=%d, y0=%d, xfit=%.2f, yfit=%.2f' %
+                      (x0, y0, xfit, yfit))
+
+            """
+            Determine if any adjustments to the CRPIX values are needed
+            """
+            dxxc = xfit - (xc.shape[1]/2.)
+            dyxc = yfit - (xc.shape[0]/2.)
+            # print('%.2f %.2f   %.2f %.2f   %.2f %.2f' %
+            #       (dxxc, dyxc, dposcr[0], dposcr[1], (dxxc-dposcr[0]),
+            #        (dyxc-dposcr[1])))
+
+            """ Adjust the CRPIX values """
+            newpix1 = hdr0['crpix1'] + dxxc
+            newpix2 = hdr0['crpix2'] + dyxc
+            hdr['ocrpix1'] = hdr['crpix1']
+            hdr['ocrpix2'] = hdr['crpix2']
+            hdr['crpix1'] = newpix1
+            hdr['crpix2'] = newpix2
+
+            """ Clean up """
+            del xc
+
+        """ Report on updated values if requested"""
+        if verbose:
+            print('')
+            print(' n  CRPIX1_0  CRPIX1     dx      CRPIX2_0  CRPIX2     dy')
+            print('--- -------- --------  ------    -------- --------  ------')
+            count = 0
+            for pix1, pix2, hdu in zip(ocrpix1, ocrpix2, self):
+                crpix1 = hdu.header['crpix1']
+                crpix2 = hdu.header['crpix2']
+                dx = crpix1 -pix1
+                dy = crpix2 -pix2
+                print('%2d  %8.2f %8.2f  %+6.2f    %8.2f %8.2f  %+6.2f' %
+                      (count, pix1, crpix1, dx, pix2, crpix2, dy))
+                count += 1
+
+            
+            
