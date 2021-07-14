@@ -13,6 +13,7 @@ from astropy.io import fits as pf
 from scipy.ndimage import filters
 
 from specim.imfuncs import WcsHDU, imfit
+from specim.imfuncs.dispparam import DispParam
 
 pyversion = sys.version_info.major
 
@@ -525,6 +526,65 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
+    def set_crpix(self, radec, flatfile=None, pixscale=None, fmin=1.,
+                  fmax=10.):
+        """
+
+        Interactively sets (through clicking on a displayed image) the
+        CRPIX values that are associated with the CRVAL that is passed
+        via the radec parameter.
+
+        """
+
+        """
+        Set up the pixel scale to use
+        The default is to use the WCS information in the file header, but if
+        the pixscale parameter has been set then its value overrides any
+        pixel scale information in the header
+        """
+        if pixscale is not None:
+            pixscale /= 3600.
+
+        """ Process the data if needed """
+        if flatfile is not None:
+            tmplist = self.apply_calib(flatfile=flatfile)
+        else:
+            tmplist = self
+            
+        """ Loop through the images, marking the object in each one """
+        for im1, crp1, crp2 in zip(tmplist, crpix1, crpix2):
+
+            """ Open and display the image [NEED TO FIX THIS!!] """
+            dpar = DispParam()
+            im1.display(fmax=fmax, mode='xy', title=im1.infile)
+
+            """ Run the interactive zooming and marking """
+            im1.start_interactive()
+            plt.show()
+
+            """ Set the crpix values to the marked location """
+            if im1.dispim.xmark is not None:
+                crp1 = im1.dispim.xmark + 1
+            if im1.dispim.ymark is not None:
+                crp2 = im1.dispim.ymark + 1
+
+            """
+            If there is no WCS information in the input file, create a base
+            version to be filled in later
+            """
+            if im1['input'].wcsinfo is None:
+                im1['input'].wcsinfo = wcs.WCS(naxis=2)
+                im1['input'].wcsinfo.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+            im1['input'].update_crpix((crp1, crp2), verbose=False)
+            im1['input'].update_crval((ra, dec), verbose=False)
+            im1.wcsinfo = im1['input'].wcsinfo
+            if flat is not None:
+                im1.data *= flat
+            im1.save(verbose=False)
+            del(im1)
+    
+    # -----------------------------------------------------------------------
+
     def align_crpix(self, radec=None, datasize=1500, fitsize=100, fwhmpix=10,
                     filtersize=5, savexc=True, verbose=True, **kwargs):
         """
@@ -677,6 +737,3 @@ class CCDSet(list):
                 print('%2d  %8.2f %8.2f  %+6.2f    %8.2f %8.2f  %+6.2f' %
                       (count, pix1, crpix1, dx, pix2, crpix2, dy))
                 count += 1
-
-            
-            
