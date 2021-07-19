@@ -10,10 +10,13 @@ import numpy as np
 from math import floor
 
 from astropy.io import fits as pf
+from astropy.table import Table
 from scipy.ndimage import filters
+from matplotlib import pyplot as plt
 
 from specim.imfuncs import WcsHDU, imfit
 from specim.imfuncs.dispparam import DispParam
+from specim.imfuncs.dispim import DispIm
 
 pyversion = sys.version_info.major
 
@@ -108,6 +111,31 @@ class CCDSet(list):
             count += 1
         return
     
+    # -----------------------------------------------------------------------
+
+    def print_cr_summary(self):
+        """
+
+        Prints a summary of the CRPIX and CRVAL values
+
+        """
+
+        print('')
+        print('File                       CRVAL1      CRVAL2     CRPIX1 '
+              '  CRPIX2 ')
+        print('------------------------ ----------- ----------- --------'
+              ' --------')
+        for i, hdu in enumerate(self):
+            hdr = hdu.header
+            if hdu.infile is not None:
+                f = hdu.infile[:-5]
+            else:
+                f = 'Image %d' % i
+            print('%-24s %11.7f %+11.7f %8.2f %8.2f' %
+                  (f, hdr['crval1'], hdr['crval2'], hdr['crpix1'],
+                   hdr['crpix2']))
+            del hdr
+
     # -----------------------------------------------------------------------
 
     def read_calfile(self, filename, file_description, hext=0, verbose=True):
@@ -526,15 +554,17 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def set_crpix(self, radec, flatfile=None, pixscale=None, fmin=1.,
-                  fmax=10.):
+    def mark_crpix(self, flatfile=None, pixscale=None, fmin=1.,
+                   fmax=10.):
         """
 
         Interactively sets (through clicking on a displayed image) the
-        CRPIX values that are associated with the CRVAL that is passed
-        via the radec parameter.
+        WCS reference pixel for each image, i.e., the CRPIX values.
 
         """
+
+        """ Set up container for the CRPIX values"""
+        crpix = Table(np.zeros((self.nfiles, 2)), names=['crpix1', 'crpix2'])
 
         """
         Set up the pixel scale to use
@@ -552,37 +582,67 @@ class CCDSet(list):
             tmplist = self
             
         """ Loop through the images, marking the object in each one """
-        for im1, crp1, crp2 in zip(tmplist, crpix1, crpix2):
+        for im1, info in zip(tmplist, crpix):
 
-            """ Open and display the image [NEED TO FIX THIS!!] """
-            dpar = DispParam()
-            im1.display(fmax=fmax, mode='xy', title=im1.infile)
+            """ Open and display the image """
+            dpar = DispParam(im1)
+            dpar.display_setup(fmax=fmax, mode='xy', title=im1.infile)
+            dispim = DispIm(im1)
+            dispim.display(dpar=dpar)
 
             """ Run the interactive zooming and marking """
-            im1.start_interactive()
+            dispim.start_interactive()
             plt.show()
 
             """ Set the crpix values to the marked location """
-            if im1.dispim.xmark is not None:
-                crp1 = im1.dispim.xmark + 1
-            if im1.dispim.ymark is not None:
-                crp2 = im1.dispim.ymark + 1
+            if dispim.xmark is not None:
+                info['crpix1'] = dispim.xmark + 1
+            if dispim.ymark is not None:
+                info['crpix2'] = dispim.ymark + 1
 
+        return crpix
+    
+    # -----------------------------------------------------------------------
+
+    def update_refvals(self, crpix, crval):
+        """
+
+        Updates the headers to include new crpix and crval values
+
+        """
+
+        for hdu, pixval in zip(self, crpix):
             """
             If there is no WCS information in the input file, create a base
             version to be filled in later
             """
-            if im1['input'].wcsinfo is None:
-                im1['input'].wcsinfo = wcs.WCS(naxis=2)
-                im1['input'].wcsinfo.wcs.ctype = ['RA---TAN', 'DEC--TAN']
-            im1['input'].update_crpix((crp1, crp2), verbose=False)
-            im1['input'].update_crval((ra, dec), verbose=False)
-            im1.wcsinfo = im1['input'].wcsinfo
-            if flat is not None:
-                im1.data *= flat
-            im1.save(verbose=False)
-            del(im1)
-    
+            if hdu.wcsinfo is None:
+                hdu.wcsinfo = wcs.WCS(naxis=2)
+                hdu.wcsinfo.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+
+            """ Update the CRPIX and CRVAL headers """
+            hdu.update_crpix((pixval['crpix1'], pixval['crpix2']),
+                             verbose=False)
+            hdu.update_crval(crval, verbose=False)
+
+    # -----------------------------------------------------------------------
+
+    def update_wcshdr(self, hdrlist=None, wcslist=None, keeplist='all',
+                      **kwargs):
+
+        for i, hdu in enumerate(self):
+            if hdrlist is not None:
+                inhdr = hdrlist[i]
+            else:
+                inhdr = hdu.header
+            if wcslist is not None:
+                wcsinfo = wcslist[i]
+            else:
+                wcsinfo = hdu.wcsinfo
+            outhdr = hdu.make_hdr_wcs(inhdr, wcsinfo, keeplist=keeplist,
+                                      **kwargs)
+            hdu.header = outhdr.copy()
+
     # -----------------------------------------------------------------------
 
     def align_crpix(self, radec=None, datasize=1500, fitsize=100, fwhmpix=10,
