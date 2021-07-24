@@ -797,3 +797,83 @@ class CCDSet(list):
                 print('%2d  %8.2f %8.2f  %+6.2f    %8.2f %8.2f  %+6.2f' %
                       (count, pix1, crpix1, dx, pix2, crpix2, dy))
                 count += 1
+
+    # -----------------------------------------------------------------------
+
+    def fit_4qso(self, infile, outfile, reflab, fittype='moffat',
+                 lab=['A', 'B', 'C', 'D']):
+        """
+
+        Fits four two-dimensional PSFs to the data in an image, guided
+        by the initial guesses that are contained in the input file (passed
+        via the infile parameter).
+
+        """
+
+        """ Load the initial guesses for the positions into a Table """
+        posnames = ['xA', 'yA', 'xB', 'yB', 'xC', 'yC', 'xD', 'yD']
+        colnames = ['fname'] + posnames
+        inittab = Table.read(infile, format='ascii.no_header', names=colnames)
+        if len(inittab) != len(self):
+            raise IndexError('Input table must match number of files')
+
+        """ Convert the the Table data into an array for ease of use """
+        N = len(self)
+        indat = ((inittab[posnames]).as_array().view(float)).reshape((N, 4, 2))
+
+        """ Set up container for output positions """
+        outtab = inittab.copy()
+        for key in posnames:
+            outtab[key] = 0.
+
+        """ Loop over the files """
+        count = 0
+        for im, info, out in zip(self, inittab, outtab):
+            """ Create an ImFit object """
+            qsofit = imfit.ImFit(im.data)
+
+            """ Set up the initial guesses in the proper format """
+            initpos = Table(indat[count, :, :], names=['x', 'y'])
+            initpos['lab'] = lab
+
+            """ Do the fitting """
+            print('')
+            print('Fitting model for file %s.  Be patient' % info['fname'])
+            mod = qsofit.moffats(initpos['x'], initpos['y'], fwhmpix=9.)
+
+            """ Store the model positions """
+            outpos = initpos.copy()
+            for i in range(4):
+                outpos['x'][i] = mod[i].x_0.value
+                outpos['y'][i] = mod[i].y_0.value
+
+            """ Compute the positions relative to the reference image """
+            mask = initpos['lab'] == reflab
+            x0 = outpos['x'][mask][0]
+            y0 = outpos['y'][mask][0]
+            outpos['x'] = x0 - outpos['x']
+            outpos['y'] -= y0
+
+            """ Convert pix to arcsec, if the image has WCS info """
+            if im.pixscale is not None:
+                outpos['x'] *= im.pixscale[0]
+                outpos['y'] *= im.pixscale[1]
+            print(outpos)
+
+            """ Put the fitted positions into the output table """
+            tmp = np.zeros((4, 2))
+            tmp[:, 0] = outpos['x']
+            tmp[:, 1] = outpos['y']
+            out[posnames] = tmp.flatten()
+
+            """ Make diagnostic fits file """
+            moddat = mod(qsofit.x, qsofit.y) + qsofit.mock_noise()
+            modim = WcsHDU(moddat, wcsverb=False)
+            modim.save('modim_%02d.fits' % count)
+            diffdat = im.data - modim.data
+            diff = WcsHDU(diffdat, wcsverb=False)
+            diff.save('resid_%02d.fits' % count)
+
+            count += 1
+        print('')
+        outtab.write(outfile, format='ascii.basic')
