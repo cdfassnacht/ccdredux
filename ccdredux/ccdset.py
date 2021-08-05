@@ -4,17 +4,18 @@ Defines a CCDSet class that can be used for the standard calibration steps
 for CCD and similar data sets
 """
 
-import os
 import sys
 import numpy as np
 from math import floor
 
+from astropy import wcs
 from astropy.io import fits as pf
+from astropy.io import registry
 from astropy.table import Table
 from scipy.ndimage import filters
 from matplotlib import pyplot as plt
 
-from specim.imfuncs import WcsHDU, imfit
+from specim.imfuncs import WcsHDU, Image, imfit
 from specim.imfuncs.dispparam import DispParam
 from specim.imfuncs.dispim import DispIm
 
@@ -31,18 +32,18 @@ class CCDSet(list):
 
     """
 
-    def __init__(self, inlist, hext=0, wcsext=None, texpkey=None, gainkey=None,
-                 rdnoisekey=None, coaddkey=None, filtkey=None, wcsverb=False,
-                 verbose=True, **kwargs):
+    def __init__(self, inlist, hext=0, wcsext=None, filecol='infile',
+                 tabformat=None, infokeys=None, texpkey=None, gainkey=None,
+                 wcsverb=False, verbose=True, **kwargs):
         """
 
-        Instantiates a CCDSet object by reading in the relevant data sets
+        Creates a CCDSet object by reading in the relevant data sets
 
         """
 
         """ Set up the empty CCDSet container by calling the superclass """
         if pyversion == 2:
-            super(Image, self).__init__()
+            super(list, self).__init__()
         else:
             super().__init__()
 
@@ -55,62 +56,140 @@ class CCDSet(list):
             self.wcsext = hext
 
         """ Set default values """
-        self.texp = np.ones(self.nfiles)
-        self.gain = -1. * np.ones(self.nfiles)
+        self.datainfo = None
         self.bias = None
         self.flat = None
         self.fringe = None
         self.darkskyflat = None
         
-        """ Load the data """
-        for i, f in enumerate(inlist):
-            tmp = WcsHDU(f, hext=hext, wcsext=wcsext, verbose=False,
-                         wcsverb=False, **kwargs)
-            if texpkey is not None:
-                if texpkey.upper() in tmp.header.keys():
-                    self.texp[i] = tmp.header[texpkey]
-                else:
-                    print('WARNING: %s keyword not found in header of file %s' %
-                          (texpkey, tmp.infile))
-            if gainkey is not None:
-                if gainkey.upper() in tmp.header.keys():
-                    self.gain[i] = tmp.header[gainkey]
-                else:
-                    print('WARNING: %s keyword not found in header of file %s' %
-                          (gainkey, tmp.infile))
+        """ Set up for loading the data """
+        if isinstance(inlist, (list, tuple)):
+            self.datainfo = Table(np.ones((len(inlist), 2)),
+                                  names=['texp', 'gain'])
+            self.datainfo['gain'] *= -1.
+            if isinstance(inlist[0], str):
+                self.datainfo['infile'] = inlist
+            elif isinstance(inlist[0],
+                            (pf.PrimaryHDU, pf.ImageHDU, WcsHDU, Image)):
+                filelist = []
+                for hdu in inlist:
+                    if hdu.infile is not None:
+                        filelist.append(hdu.infile)
+                    else:
+                        filelist.append('N/A')
+                self.datainfo['infile'] = filelist
+        elif isinstance(inlist, Table):
+            if filecol is None:
+                raise ValueError('Input list is a Table but filename column '
+                                 'has not been given\n'
+                                 'Please set the "filecol" parameter')
+            elif filecol not in inlist.keys():
+                raise KeyError('Column %s not found in input table' % filecol)
+            elif filecol != 'infile':
+                inlist.rename_column(filecol, 'infile')
+            self.datainfo = inlist.copy()
+        elif isinstance(inlist, str):
+            if tabformat is None or tabformat == 'fits':
+                try:
+                    self.datainfo = Table.read(inlist)
+                except (IOError, registry.IORegistryError):
+                    print('')
+                    print('Could not load data table.  Check input format!')
+                    print('')
+            else:
+                if tabformat[:5] != 'ascii':
+                    tabformat = 'ascii.%s' % tabformat
+                try:
+                    self.datainfo = \
+                        Table.read(inlist, guess=False, format=tabformat)
+                except (IOError, registry.IORegistryError):
+                    print('')
+                    print('Could not load data table.  Check input format!')
+                    print('')
+            if filecol not in self.datainfo.keys():
+                raise KeyError('Column %s not found in input table' % filecol)
+            elif filecol != 'infile':
+                self.datainfo.rename_column(filecol, 'infile')
+
+        """ Load the data into the object """
+        if verbose:
+            print('')
+            print('Loading data...')
+        for f, info in zip(inlist, self.datainfo):
+            if isinstance(f, (pf.PrimaryHDU, pf.ImageHDU, WcsHDU, Image)):
+                infile = f
+            else:
+                infile = info['infile']
+            tmp = WcsHDU(infile, hext=hext, wcsext=wcsext, verbose=False,
+                         wcsverb=wcsverb, **kwargs)
             self.append(tmp)
+
+        """ Put the requested information into datainfo table """
+        keylist = ['object']
+        if infokeys is not None:
+            for key in infokeys:
+                if key.lower() != 'object':
+                    keylist.append(key)
+        self.read_infokeys(keylist)
+
+        """ Rename special columns if they are there """
+        if texpkey in keylist:
+            self.datainfo.rename_column(texpkey, 'texp')
+            keylist.append('texp')
+        if gainkey in keylist:
+            self.datainfo.rename_column(gainkey, 'gain')
+            keylist.append('gain')
 
         """ Summarize the inputs """
         if verbose:
-            self.print_summary()
+            print('')
+            self.print_summary(keylist)
             
     # -----------------------------------------------------------------------
 
-    def print_summary(self):
+    def read_infokeys(self, infokeys):
+        """
+
+        Adds information that is designated by the passed keywords to the
+        datainfo table
+
+        """
+
+        """ Start by adding appropriate columns to the table """
+        for key in infokeys:
+            self.datainfo[key] = None
+
+        """ Get the information from the fits headers, if available """
+        for hdu, info in zip(self, self.datainfo):
+            hdr = hdu.header
+            for key in infokeys:
+                if key.upper() in hdr.keys():
+                    info[key] = hdr[key.upper()]
+                else:
+                    info[key] = 'N/A'
+
+        """ Set the format for printing """
+        for key in infokeys:
+            if isinstance(self.datainfo[key][0], float):
+                self.datainfo[key].format = '%.2f'
+
+    # -----------------------------------------------------------------------
+
+    def print_summary(self, infocols):
         """
 
         Summarizes the input file characteristics
 
         """
 
-        print('File            Object          texp(s) gain ')
-        print('--------------- --------------- ------- -----')
-        count = 1
-        for hdu, texp, gain in zip(self, self.texp, self.gain):
-            if hdu.infile is not None:
-                infile = os.path.basename(hdu.infile)
-            else:
-                infile = 'File %d' % count
-            if infile[-5:] == '.fits':
-                infile = infile[:-5]
-            if 'OBJECT' in hdu.header.keys():
-                obj = hdu.header['object']
-            else:
-                obj = 'N/A'
-            print('%-15s %-15s %7.2f %5.2f' % (infile, obj, texp, gain))
-            count += 1
-        return
-    
+        sumkeys = ['infile']
+        for k in infocols:
+            if k in self.datainfo.keys():
+                sumkeys.append(k)
+        if len(sumkeys) > 0:
+            infotab = self.datainfo[sumkeys]
+            print(infotab)
+
     # -----------------------------------------------------------------------
 
     def print_cr_summary(self):
@@ -256,7 +335,7 @@ class CCDSet(list):
             
             """ Process the data (bias and gain only), if desired """
             if usegain:
-                gain = self.gain[i]
+                gain = self.datainfo['gain'][i]
             else:
                 gain = -1
             tmp = self[i].process_data(gain=gain, trimsec=trimsec,
@@ -275,7 +354,7 @@ class CCDSet(list):
             """ Put the processed data into the stack """
             stack[count] = tmp.data.copy()
             count += 1
-            del(tmp)
+            del tmp
         
         if verbose:
             print('')
@@ -430,12 +509,12 @@ class CCDSet(list):
         outlist = []
         for i, hdu in enumerate(self):
             if usegain:
-                gain = self.gain[i]
+                gain = self.datainfo['gain'][i]
             else:
                 gain = -1
 
             tmp = hdu.process_data(trimsec=trimsec, bias=self.bias,
-                                   gain=gain, texp=self.texp[i],
+                                   gain=gain, texp=self.datainfo['texp'][i],
                                    flat=self.flat, fringe=self.fringe,
                                    darkskyflat=self.darkskyflat,
                                    zerosky=zerosky, flip=flip, 
@@ -682,11 +761,11 @@ class CCDSet(list):
         in the first image
         """
         hdu0 = self[0]
+        hdr0 = self[0].header
         if radec is not None:
             ra = radec[0]
             dec = radec[1]
         else:
-            hdr0 = self[0].header
             ra = hdr0['crval1']
             dec = hdr0['crval2']
         xy0 = hdu0.wcsinfo.all_world2pix(ra, dec, 1)
@@ -792,8 +871,8 @@ class CCDSet(list):
             for pix1, pix2, hdu in zip(ocrpix1, ocrpix2, self):
                 crpix1 = hdu.header['crpix1']
                 crpix2 = hdu.header['crpix2']
-                dx = crpix1 -pix1
-                dy = crpix2 -pix2
+                dx = crpix1 - pix1
+                dy = crpix2 - pix2
                 print('%2d  %8.2f %8.2f  %+6.2f    %8.2f %8.2f  %+6.2f' %
                       (count, pix1, crpix1, dx, pix2, crpix2, dy))
                 count += 1
@@ -801,7 +880,7 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def fit_4qso(self, infile, outfile, reflab, fittype='moffat',
-                 lab=['A', 'B', 'C', 'D']):
+                 lab=('A', 'B', 'C', 'D')):
         """
 
         Fits four two-dimensional PSFs to the data in an image, guided
@@ -869,9 +948,11 @@ class CCDSet(list):
             """ Make diagnostic fits file """
             moddat = mod(qsofit.x, qsofit.y) + qsofit.mock_noise()
             modim = WcsHDU(moddat, wcsverb=False)
+            modim.wcsinfo = im.wcsinfo.deepcopy()
             modim.save('modim_%02d.fits' % count)
             diffdat = im.data - modim.data
             diff = WcsHDU(diffdat, wcsverb=False)
+            diff.wcsinfo = im.wcsinfo.deepcopy()
             diff.save('resid_%02d.fits' % count)
 
             count += 1
