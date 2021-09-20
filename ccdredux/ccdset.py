@@ -67,6 +67,7 @@ class CCDSet(list):
             self.datainfo = Table(np.ones((len(inlist), 2)),
                                   names=['texp', 'gain'])
             self.datainfo['gain'] *= -1.
+            self.datainfo['texp'] *= -1.
             if isinstance(inlist[0], str):
                 self.datainfo['infile'] = inlist
             elif isinstance(inlist[0],
@@ -338,8 +339,8 @@ class CCDSet(list):
                 gain = self.datainfo['gain'][i]
             else:
                 gain = -1
-            tmp = self[i].process_data(gain=gain, trimsec=trimsec,
-                                       verbose=verbose)
+            tmp = self[i].process_data(bias=self.bias, gain=gain,
+                                       trimsec=trimsec, verbose=verbose)
 
             """ Normalize if requested """
             if normalize is not None:
@@ -520,6 +521,8 @@ class CCDSet(list):
                                    zerosky=zerosky, flip=flip, 
                                    pixscale=pixscale, rakey=rakey,
                                    deckey=deckey, verbose=verbose)
+            if hdu.infile is not None:
+                tmp.infile = hdu.infile
 
             if outfiles is not None:
                 tmp.writeto(outfiles[i])
@@ -608,8 +611,7 @@ class CCDSet(list):
                 hdu.writeto(ofile)
                 if verbose:
                     print('Wrote sky-subtracted data to %s' % ofile)
-        else:
-            return CCDSet(outlist, verbose=False)
+        return CCDSet(outlist, verbose=False)
 
     # -----------------------------------------------------------------------
 
@@ -700,8 +702,7 @@ class CCDSet(list):
                 hdu.wcsinfo.wcs.ctype = ['RA---TAN', 'DEC--TAN']
 
             """ Update the CRPIX and CRVAL headers """
-            hdu.update_crpix((pixval['crpix1'], pixval['crpix2']),
-                             verbose=False)
+            hdu.crpix = (pixval['crpix1'], pixval['crpix2'])
             hdu.update_crval(crval, verbose=False)
 
     # -----------------------------------------------------------------------
@@ -725,7 +726,7 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def align_crpix(self, radec=None, datasize=1500, fitsize=100, fwhmpix=10,
-                    filtersize=5, savexc=True, verbose=True, **kwargs):
+                    filtersize=5, savexc=False, verbose=True, **kwargs):
         """
 
         Uses the CRPIX values as the initial guesses for the shifts between
@@ -821,7 +822,7 @@ class CCDSet(list):
             dposcr = dcent - dcent0
             x0 = (xc.data.shape[1]/2.) + dposcr[0]
             y0 = (xc.data.shape[0]/2.) + dposcr[1]
-            print(x0, y0)
+            # print(x0, y0)
             dx = int(fitsize / 2.)
             xmin = int(x0 - dx)
             xmax = int(xmin + fitsize)
