@@ -61,6 +61,7 @@ class CCDSet(list):
         self.flat = None
         self.fringe = None
         self.darkskyflat = None
+        self.objmasks = None
         
         """ Set up for loading the data """
         if isinstance(inlist, (list, tuple)):
@@ -284,10 +285,10 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def median_combine(self, outfile=None, method='median', goodmask=None,
+    def median_combine(self, outfile=None, method='median', framemask=None,
                        trimsec=None, biasfile=None, flatfile=None,
                        usegain=False, normalize=None, zerosky=None,
-                       NaNmask=False, verbose=True):
+                       use_objmask=False, NaNmask=False, verbose=True):
         """ 
         This is one of the primary methods of the CCDSet class.  It will:
 
@@ -314,10 +315,10 @@ class CCDSet(list):
         else:
             xsize = self[0].data.shape[1]
             ysize = self[0].data.shape[0]
-        if goodmask is not None:
-            zsize = goodmask.sum()
+        if framemask is not None:
+            zsize = framemask.sum()
         else:
-            goodmask = np.ones(self.nfiles, dtype=bool)
+            framemask = np.ones(self.nfiles, dtype=bool)
             zsize = self.nfiles
         stack = np.zeros((zsize, ysize, xsize))
 
@@ -331,7 +332,7 @@ class CCDSet(list):
         """ Loop over the frames to create the stack """
         count = 0
         for i in range(self.nfiles):
-            if not goodmask[i]:
+            if not framemask[i]:
                 continue
             
             """ Process the data (bias and gain only), if desired """
@@ -341,6 +342,13 @@ class CCDSet(list):
                 gain = -1
             tmp = self[i].process_data(bias=self.bias, gain=gain,
                                        trimsec=trimsec, verbose=verbose)
+
+            """ Mask out the objects if use_objmask is set to True """
+            if use_objmask:
+                if self.objmasks is None:
+                    raise ValueError('\n Run make_objmasks first\n ')
+                tmp.apply_pixmask(self.objmasks[i])
+                NaNmask = True
 
             """ Normalize if requested """
             if normalize is not None:
@@ -401,8 +409,7 @@ class CCDSet(list):
     
     # -----------------------------------------------------------------------
 
-    def make_bias(self, outfile='Bias.fits', trimsec=None, gain=None,
-                  **kwargs):
+    def make_bias(self, outfile=None, trimsec=None, **kwargs):
         """ 
 
         This function median-combines the data to create a master dark/bias
@@ -423,14 +430,14 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def make_flat(self, outfile='Flat.fits', biasfile=None, gain=None, 
-                  normalize='sigclip', trimsec=None, goodmask=None,
-                  **kwargs):
+    def make_flat(self, outfile=None, biasfile=None, normalize='sigclip',
+                  trimsec=None, framemask=None, use_objmask=False, **kwargs):
         """ 
 
         Combine the data in a way that is consistent with how you would make
-        a flat-field frame
-
+         a flat-field frame
+        NOTE: For making a sky flat from science data, see the make_skyflat
+         method below
 
         Optional inputs:
           outfile      - output filename (default="Flat.fits")
@@ -448,9 +455,9 @@ class CCDSet(list):
 
         """  Call median_combine """
         hdu = self.median_combine(outfile=outfile, biasfile=biasfile,
-                                  normalize=normalize,
-                                  trimsec=trimsec,
-                                  goodmask=goodmask, **kwargs)
+                                  normalize=normalize, trimsec=trimsec,
+                                  framemask=framemask, use_objmask=use_objmask,
+                                  **kwargs)
 
         if hdu is not None:
             return hdu
@@ -544,6 +551,77 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
+    def make_objmasks(self, nsig=0.7, bpmlist=None):
+        """
+
+        Creates a list of object masks
+
+        """
+
+        objmasks = []
+
+        for i, hdu in enumerate(self):
+            if bpmlist is not None:
+                bpm = bpmlist[i]
+            else:
+                bpm = None
+            objmasks.append(hdu.make_objmask(nsig=nsig, bpm=bpm))
+
+        self.objmasks = objmasks
+
+    # -----------------------------------------------------------------------
+
+    def make_skyflat(self, outfile='SkyFlat.fits', biasfile=None,
+                     normalize='sigclip', trimsec=None, **kwargs):
+        """
+
+        Creates a flat-field frame from the science exposures.  This is a
+        one or three step process:
+           1.  Make an initial flat.  If the object masks are already made,
+               this is the last step, otherwise continue to step 2
+           2.  Make object masks so that objects in the field do not contribute
+               to the flat
+           3.  Make the flat again, this time with the object masks
+
+        """
+
+        """ Make the first flat """
+        if self.objmasks is not None:
+            self.make_flat(outfile=outfile, biasfile=biasfile,
+                           normalize=normalize, trimsec=trimsec, **kwargs)
+            return
+        else:
+            flat0 = 'FlatInit.fits'
+            self.make_flat(outfile=flat0, biasfile=biasfile,
+                           normalize=normalize, trimsec=trimsec, **kwargs)
+
+        """ If the object masks don't exist then flat-field the data """
+        print('')
+        caldat = self.apply_calib(trimsec=trimsec, biasfile=biasfile,
+                                  flatfile=flat0)
+        orig = []
+        for i, hdu in enumerate(self):
+            orig.append(hdu.data.copy())
+            hdu.data = caldat[i].data.copy()
+
+        """ Make the object masks with the initially calibrated data """
+        print('')
+        print('Making object masks')
+        self.make_objmasks()
+
+        """
+        Now reset the data, and then make a new flat but with the object
+        masks this time
+        """
+        print('')
+        print('Making final sky flat')
+        for i, hdu in enumerate(self):
+            hdu.data = orig[i].copy()
+        self.make_flat(outfile=outfile, biasfile=biasfile, normalize=normalize,
+                       trimsec=trimsec, **kwargs)
+
+    # -----------------------------------------------------------------------
+
     def skysub_nir(self, biasfile=None, objmasks=None, ngroup=5,
                    outfiles=None, verbose=True):
         """
@@ -579,7 +657,7 @@ class CCDSet(list):
                 else:
                     filename = 'File %d' % (i + 1)
                 print('Sky subtraction for %s' % filename)
-            data = orig[i]
+            # data = orig[i]
             if i < dstep:
                 start = 0
             elif i > self.nfiles - ngroup:
@@ -589,18 +667,18 @@ class CCDSet(list):
             end = min(start + ngroup, self.nfiles)
             indlist = np.arange(start, end).astype(int)
             mask = indlist != i
-            goodmask = np.zeros(self.nfiles, dtype=bool)
-            goodmask[indlist[mask]] = True
+            framemask = np.zeros(self.nfiles, dtype=bool)
+            framemask[indlist[mask]] = True
             # Original code below (normalized inputs rather than subtracting
             #    sky)
             # skyhdu = self.make_flat(outfile=None, biasfile=biasfile,
-            #                         goodmask=goodmask, NaNmask=NaNmask)
+            #                         framemask=framemask, NaNmask=NaNmask)
             # skyhdu.data[~np.isfinite(skyhdu.data)] = 0.
             # scalefac = np.median(data) / np.median(skyhdu.data)
             # print('Scaling sky-flat data for %s by %f' %
             #       (hdu.infile, scalefac))
             skyhdu = self.median_combine(zerosky='sigclip', verbose=False,
-                                         goodmask=goodmask, NaNmask=NaNmask)
+                                         framemask=framemask, NaNmask=NaNmask)
             hdu.sigma_clip()
             outdata = orig[i].data - hdu.mean_clip - skyhdu.data
             outlist.append(WcsHDU(outdata, hdu.header, verbose=False,
@@ -612,26 +690,6 @@ class CCDSet(list):
                 if verbose:
                     print('Wrote sky-subtracted data to %s' % ofile)
         return CCDSet(outlist, verbose=False)
-
-    # -----------------------------------------------------------------------
-
-    def make_objmasks(self, nsig=1., bpmlist=None):
-        """
-
-        Creates a list of object masks
-
-        """
-
-        objmasks = []
-        
-        for i, hdu in enumerate(self):
-            if bpmlist is not None:
-                bpm = bpmlist[i]
-            else:
-                bpm = None
-            objmasks.append(hdu.make_objmask(nsig=nsig, bpm=bpm))
-
-        return objmasks
 
     # -----------------------------------------------------------------------
 
@@ -822,7 +880,6 @@ class CCDSet(list):
             dposcr = dcent - dcent0
             x0 = (xc.data.shape[1]/2.) + dposcr[0]
             y0 = (xc.data.shape[0]/2.) + dposcr[1]
-            # print(x0, y0)
             dx = int(fitsize / 2.)
             xmin = int(x0 - dx)
             xmax = int(xmin + fitsize)
@@ -839,12 +896,10 @@ class CCDSet(list):
                                 usemoments=False)
             xfit = mod.x_mean + xmin
             yfit = mod.y_mean + ymin
-            if verbose:
-                print('      x0=%d, y0=%d, xfit=%.2f, yfit=%.2f' %
-                      (x0, y0, xfit, yfit))
 
             """
             Determine if any adjustments to the CRPIX values are needed
+            The cross-correlation peak will be offset from
             """
             dxxc = xfit - (xc.shape[1]/2.)
             dyxc = yfit - (xc.shape[0]/2.)
@@ -857,8 +912,7 @@ class CCDSet(list):
             newpix2 = hdr0['crpix2'] + dyxc
             hdr['ocrpix1'] = hdr['crpix1']
             hdr['ocrpix2'] = hdr['crpix2']
-            hdr['crpix1'] = newpix1
-            hdr['crpix2'] = newpix2
+            hdu.crpix = [newpix1, newpix2]
 
             """ Clean up """
             del xc
