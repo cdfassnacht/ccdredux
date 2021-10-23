@@ -5,6 +5,7 @@ for CCD and similar data sets
 """
 
 import sys
+from os import path
 import numpy as np
 from math import floor
 
@@ -65,10 +66,7 @@ class CCDSet(list):
         
         """ Set up for loading the data """
         if isinstance(inlist, (list, tuple)):
-            self.datainfo = Table(np.ones((len(inlist), 2)),
-                                  names=['texp', 'gain'])
-            self.datainfo['gain'] *= -1.
-            self.datainfo['texp'] *= -1.
+            self.datainfo = Table()
             if isinstance(inlist[0], str):
                 self.datainfo['infile'] = inlist
             elif isinstance(inlist[0],
@@ -120,14 +118,26 @@ class CCDSet(list):
         for f, info in zip(inlist, self.datainfo):
             if isinstance(f, (pf.PrimaryHDU, pf.ImageHDU, WcsHDU, Image)):
                 infile = f
+                if f.infile is not None:
+                    inbase = path.basename(f.infile)
+                else:
+                    inbase = None
             else:
                 infile = info['infile']
+                inbase = path.basename(infile)
             tmp = WcsHDU(infile, hext=hext, wcsext=wcsext, verbose=False,
                          wcsverb=wcsverb, **kwargs)
+            if inbase is not None:
+                tmp.infile = inbase
+                info['infile'] = inbase
             self.append(tmp)
 
         """ Put the requested information into datainfo table """
         keylist = ['object']
+        if texpkey is not None:
+            keylist.append(texpkey)
+        if gainkey is not None:
+            keylist.append(gainkey)
         if infokeys is not None:
             for key in infokeys:
                 if key.lower() != 'object':
@@ -136,11 +146,17 @@ class CCDSet(list):
 
         """ Rename special columns if they are there """
         if texpkey in keylist:
-            self.datainfo.rename_column(texpkey, 'texp')
-            keylist.append('texp')
+            if texpkey.lower() != 'texp':
+                self.datainfo.rename_column(texpkey, 'texp')
+                keylist.append('texp')
+        else:
+            self.datainfo['texp'] = -1.
         if gainkey in keylist:
-            self.datainfo.rename_column(gainkey, 'gain')
-            keylist.append('gain')
+            if gainkey.lower() != 'gain':
+                self.datainfo.rename_column(gainkey, 'gain')
+                keylist.append('gain')
+        else:
+            self.datainfo['gain'] = -1.
 
         """ Summarize the inputs """
         if verbose:
