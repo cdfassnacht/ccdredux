@@ -799,7 +799,7 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def align_crpix(self, radec=None, datasize=1500, fitsize=100, fwhmpix=10,
+    def align_crpix(self, radec=None, datasize=1500, fitsize=40, fwhmpix=10,
                     filtersize=5, savexc=False, verbose=True, **kwargs):
         """
 
@@ -888,10 +888,14 @@ class CCDSet(list):
 
             """
             If the WCS is basically correct, then there should be a
-            peak in the cross-correlation image pretty close to the
-            position derived from taking the difference in the CRPIX
-            values.  Therefore fit to peak within a small box centered
-            at this position
+             peak in the cross-correlation image pretty close to the
+             position derived from taking the difference in the CRPIX
+             values.  Therefore fit to peak within a small box centered
+             at this position.
+            The cross_correlate method would produce a peak at the center of
+             the cross correlation image if there were no shift between the
+             images.  Therefore, the offset has to be applied from the center
+             of the cross correlation image
             """
             dposcr = dcent - dcent0
             x0 = (xc.data.shape[1]/2.) + dposcr[0]
@@ -908,14 +912,15 @@ class CCDSet(list):
                 print('   Fitting to cross-correlation peak')
             fit = imfit.ImFit(data)
             mod = fit.gaussians(dx, dx, fwhmpix=fwhmpix,
-                                fitbkgd=False, verbose=False,
+                                fitbkgd=True, verbose=False,
                                 usemoments=False)
             xfit = mod.x_mean + xmin
             yfit = mod.y_mean + ymin
 
             """
             Determine if any adjustments to the CRPIX values are needed
-            The cross-correlation peak will be offset from
+            The cross-correlation peak will be offset from the _center_ of the
+             cross correlation image
             """
             dxxc = xfit - (xc.shape[1]/2.)
             dyxc = yfit - (xc.shape[0]/2.)
