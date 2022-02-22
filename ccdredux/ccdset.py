@@ -446,8 +446,9 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def make_flat(self, outfile=None, biasfile=None, normalize='sigclip',
-                  trimsec=None, framemask=None, use_objmask=False, **kwargs):
+    def make_flat(self, outfile=None, biasfile=None, flatfile=None,
+                  normalize='sigclip', trimsec=None, framemask=None,
+                  use_objmask=False, **kwargs):
         """ 
 
         Combine the data in a way that is consistent with how you would make
@@ -473,7 +474,7 @@ class CCDSet(list):
         hdu = self.median_combine(outfile=outfile, biasfile=biasfile,
                                   normalize=normalize, trimsec=trimsec,
                                   framemask=framemask, use_objmask=use_objmask,
-                                  **kwargs)
+                                  flatfile=flatfile, **kwargs)
 
         if hdu is not None:
             return hdu
