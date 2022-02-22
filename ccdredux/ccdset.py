@@ -357,7 +357,8 @@ class CCDSet(list):
             else:
                 gain = -1
             tmp = self[i].process_data(bias=self.bias, gain=gain,
-                                       trimsec=trimsec, verbose=verbose)
+                                       flat=self.flat, trimsec=trimsec,
+                                       verbose=verbose)
 
             """ Mask out the objects if use_objmask is set to True """
             if use_objmask:
