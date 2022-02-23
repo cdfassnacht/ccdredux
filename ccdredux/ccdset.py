@@ -351,13 +351,14 @@ class CCDSet(list):
             if not framemask[i]:
                 continue
             
-            """ Process the data (bias and gain only), if desired """
+            """ Process the data, possibly only partially, if desired """
             if usegain:
                 gain = self.datainfo['gain'][i]
             else:
                 gain = -1
             tmp = self[i].process_data(bias=self.bias, gain=gain,
-                                       trimsec=trimsec, verbose=verbose)
+                                       flat=self.flat, trimsec=trimsec,
+                                       verbose=verbose)
 
             """ Mask out the objects if use_objmask is set to True """
             if use_objmask:
@@ -777,7 +778,8 @@ class CCDSet(list):
 
             """ Update the CRPIX and CRVAL headers """
             hdu.crpix = (pixval['crpix1'], pixval['crpix2'])
-            hdu.update_crval(crval, verbose=False)
+            hdu.crval = crval
+            # hdu.update_crval(crval, verbose=False)
 
     # -----------------------------------------------------------------------
 
