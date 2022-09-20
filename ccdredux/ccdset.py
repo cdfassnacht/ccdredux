@@ -303,7 +303,7 @@ class CCDSet(list):
 
     def median_combine(self, outfile=None, method='median', framemask=None,
                        trimsec=None, biasfile=None, flatfile=None,
-                       usegain=False, normalize=None, zerosky=None,
+                       usegain=False, usetexp=False, normalize=None, zerosky=None,
                        use_objmask=False, NaNmask=False, verbose=True):
         """ 
         This is one of the primary methods of the CCDSet class.  It will:
@@ -356,7 +356,12 @@ class CCDSet(list):
                 gain = self.datainfo['gain'][i]
             else:
                 gain = -1
-            tmp = self[i].process_data(bias=self.bias, gain=gain,
+            if usetexp:
+                texp = self.datainfo['texp'][i]
+            else:
+                texp = -1
+
+            tmp = self[i].process_data(bias=self.bias, gain=gain, texp=texp,
                                        flat=self.flat, trimsec=trimsec,
                                        verbose=verbose)
 
