@@ -33,9 +33,10 @@ class CCDSet(list):
 
     """
 
-    def __init__(self, inlist, hext=0, wcsext=None, filecol='infile',
-                 tabformat=None, infokeys=None, texpkey=None, gainkey=None,
-                 wcsverb=False, verbose=True, **kwargs):
+    def __init__(self, inlist, hext=0, wcsext=None, indir=None,
+                 filecol='infile', tabformat=None, infokeys=None, texpkey=None,
+                 gainkey=None, wcsverb=False, prefix=None, suffix=None,
+                 verbose=True, **kwargs):
         """
 
         Creates a CCDSet object by reading in the relevant data sets
@@ -67,11 +68,21 @@ class CCDSet(list):
         """ Set up for loading the data """
         if isinstance(inlist, (list, tuple)):
             self.datainfo = Table()
+            filelist = []
             if isinstance(inlist[0], str):
-                self.datainfo['infile'] = inlist
+                for f in inlist:
+                    if prefix is not None:
+                        name = '%s%s' % (prefix, f)
+                    else:
+                        name = str(f)
+                    if suffix is not None:
+                        name = '%s%s' % (name, suffix)
+                    if indir is not None:
+                        name = path.join(indir, name)
+                    filelist.append(name)
+                self.datainfo['infile'] = filelist
             elif isinstance(inlist[0],
                             (pf.PrimaryHDU, pf.ImageHDU, WcsHDU, Image)):
-                filelist = []
                 for hdu in inlist:
                     if hdu.infile is not None:
                         filelist.append(hdu.infile)
@@ -235,31 +246,36 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def read_calfile(self, filename, file_description, hext=0, verbose=True):
+    def read_calfile(self, filename, file_description, caldir=None, hext=0,
+                     verbose=True):
         """
 
         Reads in a calibration file
 
         """
+        if caldir is not None:
+            infile = path.join(caldir, filename)
+        else:
+            infile = filename
         if verbose:
-            print('Reading %s file: %s' % (file_description, filename))
+            print('Reading %s file: %s' % (file_description, infile))
             
         try:
-            calhdu = WcsHDU(filename, hext=hext, verbose=False, wcsverb=False)
+            calhdu = WcsHDU(infile, hext=hext, verbose=False, wcsverb=False)
         except FileNotFoundError:
             print(' ERROR: Requested %s file %s does not exist' % 
-                  (file_description, filename))
+                  (file_description, infile))
             print('')
             return None
         except OSError:
-            print(' ERROR reading file %s' % filename)
+            print(' ERROR reading file %s' % infile)
             return None
         return calhdu
 
     # -----------------------------------------------------------------------
 
     def load_calib(self, biasfile=None, flatfile=None, fringefile=None,
-                   darkskyfile=None, hext=None, verbose=True):
+                   darkskyfile=None, caldir=None, hext=None, verbose=True):
         """
 
         Loads external calibration files and stores them as attributes of
@@ -279,23 +295,25 @@ class CCDSet(list):
             print('---------------------------------------')
         if biasfile is not None:
             self.bias = self.read_calfile(biasfile, 'bias/dark', hext=hext,
-                                          verbose=verbose)
+                                          caldir=caldir, verbose=verbose)
             if self.bias is None:
                 raise OSError('Error reading %s' % biasfile)
 
         if flatfile is not None:
-            self.flat = self.read_calfile(flatfile, 'flat-field', hext=hext)
+            self.flat = self.read_calfile(flatfile, 'flat-field', hext=hext,
+                                          caldir=caldir)
             if self.flat is None:
                 raise OSError('Error reading %s' % flatfile)
 
         if fringefile is not None:
-            self.fringe = self.read_calfile(fringefile, 'fringe', hext=hext)
+            self.fringe = self.read_calfile(fringefile, 'fringe', caldir=caldir,
+                                            hext=hext)
             if self.fringe is None:
                 raise OSError('Error reading %s' % fringefile)
 
         if darkskyfile is not None:
             self.darkskyflat = self.read_calfile(darkskyfile, 'dark-sky flat',
-                                                 hext=hext)
+                                                 caldir=caldir, hext=hext)
             if self.darkskyflat is None:
                 raise OSError('Error reading %s' % darkskyfile)
 
@@ -489,7 +507,7 @@ class CCDSet(list):
 
     def apply_calib(self, outfiles=None, trimsec=None, biasfile=None,
                     usegain=False, flatfile=None, fringefile=None,
-                    darkskyfile=None, zerosky=None, flip=None,
+                    darkskyfile=None, zerosky=None, caldir=None, flip=None,
                     pixscale=0.0, rakey='ra', deckey='dec',
                     verbose=True):
         """
@@ -508,6 +526,9 @@ class CCDSet(list):
           darkskyfile Dark-sky flat correction
           skysub      Subtract mean sky level if keyword set to True
           texp_key    Divide by exposure time (set keyword to fits header name)
+          caldir      Directory containing the calibration files.  The default
+                       value of None means that they are in the current
+                       directory
           flip        None => no flip
           pixscale    If >0, apply a rough WCS using this pixel scale (RA and
                         Dec come from telescope pointing info in fits header)
@@ -528,7 +549,7 @@ class CCDSet(list):
 
         """ Read in calibration frames if they have been selected """
         self.load_calib(biasfile, flatfile, fringefile, darkskyfile,
-                        verbose=verbose)
+                        caldir=caldir, verbose=verbose)
 
         """ Prepare to calibrate the data """
         if verbose:
@@ -713,6 +734,10 @@ class CCDSet(list):
                 if verbose:
                     print('Wrote sky-subtracted data to %s' % ofile)
         return CCDSet(outlist, verbose=False)
+
+    # -----------------------------------------------------------------------
+
+    # def make_ones(self):
 
     # -----------------------------------------------------------------------
 
