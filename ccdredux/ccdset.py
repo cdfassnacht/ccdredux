@@ -60,6 +60,7 @@ class CCDSet(list):
         """ Set default values """
         self.datainfo = None
         self.bias = None
+        self.bpmglobal = None
         self.flat = None
         self.fringe = None
         self.darkskyflat = None
@@ -121,6 +122,9 @@ class CCDSet(list):
                 raise KeyError('Column %s not found in input table' % filecol)
             elif filecol != 'infile':
                 self.datainfo.rename_column(filecol, 'infile')
+        else:
+            raise TypeError('\nERROR: Input is not in a valid format\n')
+        self.datainfo['basename'] = self.datainfo['infile'].copy()
 
         """ Load the data into the object """
         if verbose:
@@ -129,18 +133,12 @@ class CCDSet(list):
         for f, info in zip(inlist, self.datainfo):
             if isinstance(f, (pf.PrimaryHDU, pf.ImageHDU, WcsHDU, Image)):
                 infile = f
-                if f.infile is not None:
-                    inbase = path.basename(f.infile)
-                else:
-                    inbase = None
             else:
                 infile = info['infile']
-                inbase = path.basename(infile)
             tmp = WcsHDU(infile, hext=hext, wcsext=wcsext, verbose=False,
                          wcsverb=wcsverb, **kwargs)
-            if inbase is not None:
-                tmp.infile = inbase
-                info['infile'] = inbase
+            if tmp.basename is not None:
+                info['basename'] = tmp.basename
             self.append(tmp)
 
         """ Put the requested information into datainfo table """
@@ -211,7 +209,7 @@ class CCDSet(list):
 
         """
 
-        sumkeys = ['infile']
+        sumkeys = ['basename']
         for k in infocols:
             if k in self.datainfo.keys():
                 sumkeys.append(k)
@@ -235,14 +233,37 @@ class CCDSet(list):
               ' --------')
         for i, hdu in enumerate(self):
             hdr = hdu.header
-            if hdu.infile is not None:
-                f = hdu.infile[:-5]
+            if hdu.basename is not None:
+                f = hdu.basename[:-5]
             else:
                 f = 'Image %d' % i
             print('%-24s %11.7f %+11.7f %8.2f %8.2f' %
                   (f, hdr['crval1'], hdr['crval2'], hdr['crpix1'],
                    hdr['crpix2']))
             del hdr
+
+    # -----------------------------------------------------------------------
+
+    def rms_summary(self, statradec, statsize, centtype, sizetype=None):
+        """
+        Calculates the rms in a specifiec region (typically defined to be
+        centered at the same (RA,Dec)) for the files in this object
+        """
+
+        print('')
+        print('File             xcent   ycent     rms')
+        print('--------------- ------- -------  --------')
+
+        for i, hdu in enumerate(self):
+            tmp = hdu.get_rms(statradec, statsize, centtype, sizetype,
+                              verbose=False)
+            if hdu.basename is not None:
+                f = hdu.basename[:-5]
+            else:
+                f = 'Image %d' % i
+            print('%-15s %7.2f %7.2f  %7f' %
+                  (f, tmp['statcent'][0], tmp['statcent'][1], tmp['rms']))
+            del tmp
 
     # -----------------------------------------------------------------------
 
@@ -275,7 +296,8 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def load_calib(self, biasfile=None, flatfile=None, fringefile=None,
-                   darkskyfile=None, caldir=None, hext=None, verbose=True):
+                   darkskyfile=None, bpmglobfile=None, caldir=None, hext=None,
+                   verbose=True):
         """
 
         Loads external calibration files and stores them as attributes of
@@ -299,6 +321,13 @@ class CCDSet(list):
             if self.bias is None:
                 raise OSError('Error reading %s' % biasfile)
 
+        if bpmglobfile is not None:
+            self.bpmglobal = \
+                self.read_calfile(bpmglobfile, 'global bpm',  hext=hext,
+                                  caldir=caldir, verbose=verbose)
+            if self.bpmglobal is None:
+                raise OSError('Error reading %s' % bpmglobfile)
+
         if flatfile is not None:
             self.flat = self.read_calfile(flatfile, 'flat-field', hext=hext,
                                           caldir=caldir)
@@ -321,8 +350,9 @@ class CCDSet(list):
 
     def median_combine(self, outfile=None, method='median', framemask=None,
                        trimsec=None, biasfile=None, flatfile=None,
-                       usegain=False, usetexp=False, normalize=None, zerosky=None,
-                       use_objmask=False, NaNmask=False, verbose=True):
+                       usegain=False, usetexp=False, normalize=None,
+                       zerosky=None, use_objmask=False, NaNmask=False,
+                       verbose=True):
         """ 
         This is one of the primary methods of the CCDSet class.  It will:
 
@@ -394,7 +424,8 @@ class CCDSet(list):
             if normalize is not None:
                 mask = np.isfinite(tmp.data)
                 normfac = tmp.normalize(method=normalize, mask=mask)
-                print('    Normalizing by %f' % normfac)
+                if verbose:
+                    print('    Normalizing by %f' % normfac)
 
             """ Set the sky to zero if requested """
             if zerosky is not None:
