@@ -297,7 +297,7 @@ class CCDSet(list):
 
     def load_calib(self, biasfile=None, flatfile=None, fringefile=None,
                    darkskyfile=None, bpmglobfile=None, caldir=None, hext=None,
-                   verbose=True):
+                   verbose=True, headverbose=True):
         """
 
         Loads external calibration files and stores them as attributes of
@@ -312,7 +312,7 @@ class CCDSet(list):
             hext = self.hext
             
         """ Read in calibration frames if they have been selected """
-        if verbose:
+        if headverbose:
             print('Loading any requested calibration files')
             print('---------------------------------------')
         if biasfile is not None:
@@ -352,7 +352,7 @@ class CCDSet(list):
                        trimsec=None, biasfile=None, flatfile=None,
                        usegain=False, usetexp=False, normalize=None,
                        zerosky=None, use_objmask=False, NaNmask=False,
-                       verbose=True):
+                       verbose=True, headverbose=True):
         """ 
         This is one of the primary methods of the CCDSet class.  It will:
 
@@ -367,7 +367,8 @@ class CCDSet(list):
         """
 
         """ Load any requested calibration files """
-        self.load_calib(biasfile, flatfile, verbose=verbose)
+        self.load_calib(biasfile, flatfile, verbose=verbose,
+                        headverbose=headverbose)
 
         """
         Set up the container to hold the data stack that will be used to
@@ -626,7 +627,7 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def make_objmasks(self, nsig=0.7, bpmlist=None):
+    def make_objmasks(self, nsig=0.7, bpmlist=None, verbose=True):
         """
 
         Creates a list of object masks
@@ -641,6 +642,8 @@ class CCDSet(list):
             else:
                 bpm = None
             objmasks.append(hdu.make_objmask(nsig=nsig, bpm=bpm))
+            if verbose and hdu.infile is not None:
+                print(hdu.infile)
 
         self.objmasks = objmasks
 
@@ -753,7 +756,8 @@ class CCDSet(list):
             # print('Scaling sky-flat data for %s by %f' %
             #       (hdu.infile, scalefac))
             skyhdu = self.median_combine(zerosky='sigclip', verbose=False,
-                                         framemask=framemask, NaNmask=NaNmask)
+                                         framemask=framemask, NaNmask=NaNmask,
+                                         headverbose=False)
             hdu.sigma_clip()
             outdata = orig[i].data - hdu.mean_clip - skyhdu.data
             outlist.append(WcsHDU(outdata, hdu.header, verbose=False,
@@ -864,7 +868,8 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def align_crpix(self, radec=None, datasize=1500, fitsize=40, fwhmpix=10,
-                    filtersize=5, savexc=False, verbose=True, **kwargs):
+                    filtersize=5, savexc=False, verbose=True, debug=False,
+                    **kwargs):
         """
 
         Uses the CRPIX values as the initial guesses for the shifts between
@@ -909,6 +914,9 @@ class CCDSet(list):
             dec = hdr0['crval2']
         xy0 = hdu0.wcsinfo.all_world2pix(ra, dec, 1)
         dcent0 = np.array([xy0[0], xy0[1]])
+        if debug:
+            print('   Requested center in image 0 at pix: %.2f %.2f'
+                  % (dcent0[0], dcent0[1]))
 
         """ Set up container for old CRPIX values """
         ocrpix1 = np.zeros(self.nfiles)
@@ -927,6 +935,9 @@ class CCDSet(list):
             """
             xy = hdu.wcsinfo.all_world2pix(ra, dec, 1)
             dcent = np.array([xy[0], xy[1]])
+            if debug:
+                print('   Requested center in image %d at pix: %.2f %.2f'
+                      % (i, dcent[0], dcent[1]))
             hdr = hdu.header
             ocrpix1[i] = hdr['crpix1']
             ocrpix2[i] = hdr['crpix2']
@@ -948,7 +959,18 @@ class CCDSet(list):
             Do a small median smoothing on the cross-correlated image to
             get rid of possible cosmic-ray / bad-pixel overlaps
             """
+            if debug:
+                tmpdat = xc.data
+                yxpeak = np.unravel_index(tmpdat.argmax(), tmpdat.shape)
+                print('   Peak in xcorr before smoothing: %d    %d' %
+                      (yxpeak[1], yxpeak[0]))
             xc.data = filters.median_filter(xc.data, size=filtersize)
+            if debug:
+                tmpdat = xc.data
+                yxpeak = np.unravel_index(tmpdat.argmax(), tmpdat.shape)
+                print('   Peak in xcorr after smoothing:  %d    %d' %
+                      (yxpeak[1], yxpeak[0]))
+                xc.writeto('xctest.fits')
 
             """
             If the WCS is basically correct, then there should be a
@@ -962,24 +984,34 @@ class CCDSet(list):
              of the cross correlation image
             """
             dposcr = dcent - dcent0
-            x0 = (xc.data.shape[1]/2.) + dposcr[0]
-            y0 = (xc.data.shape[0]/2.) + dposcr[1]
+            x0 = int(xc.data.shape[1]/2.) + dposcr[0]
+            y0 = int(xc.data.shape[0]/2.) + dposcr[1]
             dx = int(fitsize / 2.)
             xmin = int(x0 - dx)
             xmax = int(xmin + fitsize)
             ymin = int(y0 - dx)
             ymax = int(ymin + fitsize)
             data = xc.data[ymin:ymax, xmin:xmax]
-            
+            if debug:
+                print('   Expected peak position:         %.2f %.2f' % (x0, y0))
+                print('   xrange = [%d:%d]' % (xmin, xmax))
+                print('   yrange = [%d:%d]' % (ymin, ymax))
+
             """ Fit to the cross-correlation peak """
             if verbose:
                 print('   Fitting to cross-correlation peak')
             fit = imfit.ImFit(data)
-            mod = fit.gaussians(dx, dx, fwhmpix=fwhmpix,
-                                fitbkgd=True, verbose=False,
+            yguess, xguess = np.unravel_index(data.argmax(), data.shape)
+            mod = fit.gaussians(xguess, yguess, fwhmpix=fwhmpix, dxymax=5,
+                                fitbkgd=False, verbose=False,
                                 usemoments=False)
             xfit = mod.x_mean + xmin
             yfit = mod.y_mean + ymin
+            if debug:
+                print('   Found xcorr peak in cutout: %.2f %.2f' %
+                      (mod.x_mean.value, mod.y_mean.value))
+                print('   ==> peak in full xcorr frame: %.2f %.2f' %
+                      (xfit, yfit))
 
             """
             Determine if any adjustments to the CRPIX values are needed
@@ -1001,6 +1033,8 @@ class CCDSet(list):
 
             """ Clean up """
             del xc
+            if debug:
+                print('')
 
         """ Report on updated values if requested"""
         if verbose:
