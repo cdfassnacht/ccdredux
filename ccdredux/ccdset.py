@@ -348,7 +348,8 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def median_combine(self, outfile=None, method='median', framemask=None,
+    def median_combine(self, outfile=None, outobj=None, method='median',
+                       framemask=None,
                        trimsec=None, biasfile=None, flatfile=None,
                        usegain=False, usetexp=False, normalize=None,
                        zerosky=None, use_objmask=False, NaNmask=False,
@@ -469,6 +470,8 @@ class CCDSet(list):
 
         """ Put the result into a HDU for saving or returning """
         phdu = pf.PrimaryHDU(outdat)
+        if outobj is not None:
+            phdu.header['object'] = outobj
 
         """ Write the output median file or return HDU """
         if outfile is not None:
