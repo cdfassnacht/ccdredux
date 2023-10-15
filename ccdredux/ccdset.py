@@ -7,7 +7,7 @@ for CCD and similar data sets
 import sys
 from os import path
 import numpy as np
-from math import floor
+from math import floor, sqrt
 
 from astropy import wcs
 from astropy.io import fits as pf
@@ -244,7 +244,7 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def rms_summary(self, statradec, statsize, centtype, sizetype=None):
+    def rms_summary(self, statradec, statsize, centtype='radec', sizetype=None):
         """
         Calculates the rms in a specifiec region (typically defined to be
         centered at the same (RA,Dec)) for the files in this object
@@ -254,6 +254,7 @@ class CCDSet(list):
         print('File             xcent   ycent     rms')
         print('--------------- ------- -------  --------')
 
+        var = np.zeros(len(self))
         for i, hdu in enumerate(self):
             tmp = hdu.get_rms(statradec, statsize, centtype, sizetype,
                               verbose=False)
@@ -263,7 +264,13 @@ class CCDSet(list):
                 f = 'Image %d' % i
             print('%-15s %7.2f %7.2f  %7f' %
                   (f, tmp['statcent'][0], tmp['statcent'][1], tmp['rms']))
+            var[i] = tmp['rms']**2
             del tmp
+
+        print('')
+        rms_est = sqrt(var.sum()) / len(self)
+        print('Estimated rms if files are averaged: %7f' % rms_est)
+        print('')
 
     # -----------------------------------------------------------------------
 
@@ -1053,6 +1060,254 @@ class CCDSet(list):
                 print('%2d  %8.2f %8.2f  %+6.2f    %8.2f %8.2f  %+6.2f' %
                       (count, pix1, crpix1, dx, pix2, crpix2, dy))
                 count += 1
+
+    # -----------------------------------------------------------------------
+
+    def plot_panel(self, hdu, plotpars, ax=None, mode='radec', axlabel=False,
+                   fscale='linear', fontsize=None, verbose=True,
+                   **kwargs):
+        """
+
+        Plots a single panel
+
+        """
+
+        """ If no axis has been defined, just do a single-panel plot"""
+        if ax is None:
+            fig = plt.figure()
+            ax = plt.gca()
+
+        """ Select the portion of the image to be displayed """
+        if mode == 'xy' or mode == 'pix':
+            imcent = (plotpars['x_cent'], plotpars['y_cent'])
+        else:
+            imcent = (plotpars['ra'], plotpars['dec'])
+            plthdu = hdu.cutout_radec(imcent, plotpars['imsize'],
+                                      verbose=verbose)
+
+        """ Set up the default display parameters"""
+        dpar = DispParam(plthdu)
+        if 'fmax' in plotpars.keys():
+            dpar.display_setup(mode=mode, fmax=plotpars['fmax'],
+                               verbose=verbose, **kwargs)
+        else:
+            dpar.display_setup(mode=mode, verbose=verbose, **kwargs)
+
+        """ Update the display parameters """
+        dpar.axlab = 'off'
+
+        """ Actually display the image """
+        dispim = DispIm(plthdu)
+        dispim.display(fscale=fscale, ax=ax, axlabel=axlabel, fontsize=fontsize,
+                       mode=mode, dpar=dpar)
+
+
+    # -----------------------------------------------------------------------
+
+    def plot_multipanel(self, plotinfo, mode='radec', ncol=None, maxrows=None,
+                        outfile=None, panelsize=2.0, debug=False, **kwargs):
+        """
+
+        Makes a multiple-panel plot using the image data in the object.
+
+        Required inputs:
+          plotinfo  -  Either an astropy Table object or a list of dicts that
+                       contains information that governs the plotting of
+                       each panel.
+                       Required columns/keys in plotinfo:
+                         x_cent or RA, depending if mode is 'xy' or 'radec'
+                         y_cent or Dec, depending if mode is 'xy' or 'radec'
+                         imsize - size is in pixels if mode is 'xy' or arcsec
+                                   if mod is 'radec'
+
+        """
+
+        """ First make sure that plotinfo is the correct data type and size """
+        isdlist = False
+        if isinstance(plotinfo, (Table, list)):
+            if len(plotinfo) != len(self):
+                raise IndexError('\nLength of plotinfo does not match number'
+                                 ' of images\n')
+            if isinstance(plotinfo, list):
+                if isinstance(plotinfo[0], dict):
+                    isdlist = True
+                else:
+                    raise TypeError('\nIf plotinfo is a list, then it must be '
+                                    '  list of dict objects\n')
+        else:
+            raise TypeError('\nplotinfo parameter must be an astropy Table '
+                            'or a list of dicts\n')
+
+        """ Make sure the image center and image size keys are in """
+        if isdlist:
+            keylist = plotinfo[0].keys()
+        else:
+            keylist = plotinfo.keys()
+        if mode == 'xy':
+            critkeys = ['x_cent', 'y_cent', 'imsize']
+        else:
+            critkeys = ['ra', 'dec', 'imsize']
+        for k in critkeys:
+            if k not in keylist:
+                raise KeyError('\nplotinfo is missing %s\n' % k)
+
+        """ Determine the number of columns and rows for the multipanel plot """
+        if ncol is None:
+            nn = sqrt(len(self))
+            if len(self) % nn == 0:
+                ncol = int(nn)
+            else:
+                ncol = int(nn) + 1
+        if len(self) % ncol == 0:
+            nrow = int(len(self) / ncol)
+        else:
+            nrow = int(len(self) / ncol) + 1
+        if debug:
+            print('Number of rows x columns = %d x %d' % (nrow, ncol))
+            print('')
+
+        """ Set up plotting basics """
+        if maxrows is not None:
+            if nrow > maxrows:
+                figsize = (ncol * panelsize, maxrows * panelsize)
+                totfigs = int(nrow / maxrows) + 1
+                lastsize = (ncol * panelsize, (nrow % maxrows) * panelsize)
+            ny = min(nrow, maxrows)
+        else:
+            figsize = (ncol * panelsize, nrow * panelsize)
+            totfigs = 1
+            ny = nrow
+        xsize = 1.0 / ncol - 0.005
+        ysize = 1.0 / ny - 0.005
+
+        """ Loop through the images, plotting each one """
+        fig, axes = plt.subplots(ny, ncol, figsize=figsize)
+        row = -1
+        # for i, hdu in enumerate(self):
+        for i in range(ny * ncol):
+            col = i % ncol
+            if col == 0:
+                row += 1
+            # print(i, row, col)
+            ax = axes[row, col]
+            if i < len(self):
+                self.plot_panel(self[i], plotinfo[i], ax=ax, mode=mode,
+                                axlabel=False, **kwargs)
+            else:
+                ax.set_axis_off()
+        plt.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005)
+        plt.subplots_adjust(wspace=0.01, hspace=0.01)
+
+        if outfile is not None:
+            plt.savefig(outfile)
+            print('')
+            print('Saved figure to %s' % outfile)
+            print('')
+        else:
+            plt.show()
+
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _make_swarp_keepflag(keylist=None):
+        """
+
+        Set a default list of keywords to keep in the proper format for
+        swarp
+
+        """
+
+        if keylist is None:
+            keepkeys = ['object', 'telescop', 'instrume', 'filter']
+        else:
+            keepkeys = keylist
+        for i, k in enumerate(keepkeys):
+            if i == 0:
+                keys = k.upper()
+            else:
+                keys = '%s,%s' % (keys, k.upper())
+        keyflag = '-COPY_KEYWORDS %s ' % keys
+
+        return keyflag
+
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _set_default_swarppars():
+        """
+
+        Sets the default values for parameters to be passed to swarp.
+        These default values can be overridden by values in the swarppars
+        parameter that is passed to run_swarp
+
+        """
+
+        swarppars = {
+            'combtype': 'median',
+            'weighttype': 'NONE',
+            'keepkeys': ['object', 'telescop', 'instrume', 'filter']
+        }
+
+        return swarppars
+
+    # -----------------------------------------------------------------------
+
+    def _make_swarp_addstr(self, swarppars):
+        """
+
+        Makes a string, in the appropriate format, containing optional
+        parameters to be passed to swarp in the run_swarp method
+
+        """
+
+        """ First set the default values """
+        pars = self._set_default_swarppars()
+        if swarppars is not None:
+            for k in swarppars.keys():
+                pars[k] = swarppars[k]
+                print('Setting pars[%s] to %s' % (k, swarppars[k]))
+
+        """ Loop through the pars dictionary and create the output string """
+        addstr = ' '
+        for k in pars.keys():
+            if k == 'combtype':
+                addstr += '-COMBINE_TYPE %s ' % pars[k].upper()
+            elif k == 'keepkeys':
+                addstr += self._make_swarp_keepflag(pars[k])
+
+        return addstr
+
+    # -----------------------------------------------------------------------
+
+    def run_swarp(self, config, outfile, swarppars=None, whtflags=None,
+                  flags=None, outwhtsuff='wht', verbose=True):
+        """
+
+        Runs swarp on the files in the CCDSet object, using the provided
+        swarp configuration file (config parameter)
+
+        """
+
+        """ Create input filelist in swarp format """
+        for i, info in enumerate(self):
+            if i == 0:
+                infiles = '%s' % info.infile
+            else:
+                infiles += ',%s' % info.infile
+
+        """ Set up the base call to swarp """
+        swarpcommand = 'swarp %s -c %s ' % (infiles, config)
+        if outfile is not None:
+            swarpcommand += '-IMAGEOUT_NAME %s ' % outfile
+            if outwhtsuff is not None:
+                outwht = outfile.replace('.fits', '_%s.fits' % outwhtsuff)
+                swarpcommand += '-WEIGHTOUT_NAME %s ' % outwht
+
+        """ Add additional swarp flags """
+        swarpcommand += '%s ' % self._make_swarp_addstr(swarppars)
+
+        print('')
+        print(swarpcommand)
 
     # -----------------------------------------------------------------------
 
