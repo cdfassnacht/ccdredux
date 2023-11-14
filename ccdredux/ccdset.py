@@ -145,13 +145,20 @@ class CCDSet(list):
         keylist = ['object']
         if texpkey is not None:
             keylist.append(texpkey)
+        else:
+            texpkey = 'exptime'
+            keylist.append('exptime')
         if gainkey is not None:
             keylist.append(gainkey)
+        else:
+            gainkey = 'gain'
+            keylist.append('gain')
         if infokeys is not None:
             for key in infokeys:
-                if key.lower() != 'object':
+                kl = key.lower()
+                if kl != 'object' and kl != texpkey and kl != gainkey:
                     keylist.append(key)
-        self.read_infokeys(keylist)
+        self.read_infokeys(keylist, texpkey=texpkey, gainkey=gainkey)
 
         """ Rename special columns if they are there """
         if texpkey in keylist:
@@ -174,7 +181,7 @@ class CCDSet(list):
             
     # -----------------------------------------------------------------------
 
-    def read_infokeys(self, infokeys):
+    def read_infokeys(self, infokeys, texpkey, gainkey):
         """
 
         Adds information that is designated by the passed keywords to the
@@ -184,7 +191,10 @@ class CCDSet(list):
 
         """ Start by adding appropriate columns to the table """
         for key in infokeys:
-            self.datainfo[key] = None
+            if key == texpkey or key == gainkey:
+                self.datainfo[key] = -1
+            else:
+                self.datainfo[key] = None
 
         """ Get the information from the fits headers, if available """
         for hdu, info in zip(self, self.datainfo):
@@ -192,6 +202,8 @@ class CCDSet(list):
             for key in infokeys:
                 if key.upper() in hdr.keys():
                     info[key] = hdr[key.upper()]
+                elif key == 'exptime' or key == 'gain':
+                    infokeys.remove(key)
                 else:
                     info[key] = 'N/A'
 
@@ -228,9 +240,9 @@ class CCDSet(list):
 
         print('')
         print('File                       CRVAL1      CRVAL2     CRPIX1 '
-              '  CRPIX2 ')
+              '  CRPIX2     Notes')
         print('------------------------ ----------- ----------- --------'
-              ' --------')
+              ' -------- -------------')
         for i, hdu in enumerate(self):
             hdr = hdu.header
             if hdu.basename is not None:
@@ -797,6 +809,7 @@ class CCDSet(list):
 
         """ Set up container for the CRPIX values"""
         crpix = Table(np.zeros((self.nfiles, 2)), names=['crpix1', 'crpix2'])
+        notes = []
 
         """
         Set up the pixel scale to use
@@ -827,10 +840,17 @@ class CCDSet(list):
             plt.show()
 
             """ Set the crpix values to the marked location """
+            hdr = im1.header
             if dispim.xmark is not None:
                 info['crpix1'] = dispim.xmark + 1
+                notes.append('..')
+            elif 'CRPIX1' in hdr.keys():
+                info['crpix1'] = hdr['crpix1']
+                notes.append('Did not mark object')
             if dispim.ymark is not None:
                 info['crpix2'] = dispim.ymark + 1
+            elif 'CRPIX2' in hdr.keys():
+                info['crpix2'] = hdr['crpix2']
 
         return crpix
     
@@ -1064,7 +1084,7 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def plot_panel(self, hdu, plotpars, ax=None, mode='radec', axlabel=False,
-                   fscale='linear', fontsize=None, verbose=True,
+                   fontsize=None, verbose=True,
                    **kwargs):
         """
 
@@ -1080,6 +1100,9 @@ class CCDSet(list):
         """ Select the portion of the image to be displayed """
         if mode == 'xy' or mode == 'pix':
             imcent = (plotpars['x_cent'], plotpars['y_cent'])
+            x1, y1, x2, y2 = hdu.subim_bounds_xy(imcent, plotpars['imsize'])
+            plthdu = hdu.cutout_xy(x1, y1, x2, y2, verbose=verbose)
+
         else:
             imcent = (plotpars['ra'], plotpars['dec'])
             plthdu = hdu.cutout_radec(imcent, plotpars['imsize'],
@@ -1087,6 +1110,12 @@ class CCDSet(list):
 
         """ Set up the default display parameters"""
         dpar = DispParam(plthdu)
+
+        """ Set up internal labels """
+        for k in ['tltext', 'tctext', 'trtext', 'bltext', 'bctext', 'brtext']:
+            if k in plotpars.keys():
+                dpar[k] = plotpars[k]
+
         if 'fmax' in plotpars.keys():
             dpar.display_setup(mode=mode, fmax=plotpars['fmax'],
                                verbose=verbose, **kwargs)
@@ -1098,9 +1127,8 @@ class CCDSet(list):
 
         """ Actually display the image """
         dispim = DispIm(plthdu)
-        dispim.display(fscale=fscale, ax=ax, axlabel=axlabel, fontsize=fontsize,
+        dispim.display(ax=ax, axlabel=axlabel, fontsize=fontsize,
                        mode=mode, dpar=dpar)
-
 
     # -----------------------------------------------------------------------
 
@@ -1182,14 +1210,20 @@ class CCDSet(list):
 
         """ Loop through the images, plotting each one """
         fig, axes = plt.subplots(ny, ncol, figsize=figsize)
+        if debug:
+            print(axes.shape)
         row = -1
         # for i, hdu in enumerate(self):
         for i in range(ny * ncol):
             col = i % ncol
             if col == 0:
                 row += 1
-            # print(i, row, col)
-            ax = axes[row, col]
+            if debug:
+                print(i, row, col)
+            if ny > 1:
+                ax = axes[row, col]
+            else:
+                ax = axes[col]
             if i < len(self):
                 self.plot_panel(self[i], plotinfo[i], ax=ax, mode=mode,
                                 axlabel=False, **kwargs)
