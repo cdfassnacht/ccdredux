@@ -204,6 +204,8 @@ class CCDSet(list):
                     info[key] = hdr[key.upper()]
                 elif key == 'exptime' or key == 'gain':
                     infokeys.remove(key)
+                elif key == texpkey or key == gainkey:
+                    info[key] = -1
                 else:
                     info[key] = 'N/A'
 
