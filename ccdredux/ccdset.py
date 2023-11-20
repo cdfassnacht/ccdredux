@@ -173,6 +173,9 @@ class CCDSet(list):
                 keylist.append('gain')
         else:
             self.datainfo['gain'] = -1.
+        for k in ['texp', 'gain']:
+            if isinstance(self.datainfo[k][0], float):
+                self.datainfo[k].format = '%.2f'
 
         """ Summarize the inputs """
         if verbose:
