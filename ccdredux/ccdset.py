@@ -338,7 +338,6 @@ class CCDSet(list):
         """ Read in calibration frames if they have been selected """
         if headverbose:
             print('Loading any requested calibration files')
-            print('---------------------------------------')
         if biasfile is not None:
             self.bias = self.read_calfile(biasfile, 'bias/dark', hext=hext,
                                           caldir=caldir, verbose=verbose)
