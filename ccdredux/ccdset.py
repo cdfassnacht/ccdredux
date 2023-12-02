@@ -1115,10 +1115,14 @@ class CCDSet(list):
         """ Set up the default display parameters"""
         dpar = DispParam(plthdu)
 
+        """ Override and/or add to default parameters if requested """
+        for k in plotpars.keys():
+            dpar[k] = plotpars[k]
+
         """ Set up internal labels """
-        for k in ['tltext', 'tctext', 'trtext', 'bltext', 'bctext', 'brtext']:
-            if k in plotpars.keys():
-                dpar[k] = plotpars[k]
+        # for k in ['tltext', 'tctext', 'trtext', 'bltext', 'bctext', 'brtext']:
+        #     if k in plotpars.keys():
+        #         dpar[k] = plotpars[k]
 
         if 'fmax' in plotpars.keys():
             dpar.display_setup(mode=mode, fmax=plotpars['fmax'],
@@ -1170,7 +1174,7 @@ class CCDSet(list):
             raise TypeError('\nplotinfo parameter must be an astropy Table '
                             'or a list of dicts\n')
 
-        """ Make sure the image center and image size keys are in """
+        """ Make sure the image center and image size keys are in plotinfo """
         if isdlist:
             keylist = plotinfo[0].keys()
         else:
@@ -1243,6 +1247,34 @@ class CCDSet(list):
             print('')
         else:
             plt.show()
+
+    # -----------------------------------------------------------------------
+
+    def check_alignment(self, ra, dec, imsize, fmax=20., **kwargs):
+        """
+
+        Use this method if the CCDSet object is multiple exposures of the
+        same field.  The method will plot cutouts from each exposure,
+        centered at the same (RA, Dec) position, according to the WCS
+        information in that exposure.  This allows the user to see if the
+        exposures are astrometrically aligned or not
+
+        """
+
+        """
+        Make a list of dict objects that contains information needed for
+        the plotting
+        """
+        plotinfo = []
+        for hdu, info in zip(self, self.datainfo):
+            pdict = {'ra': ra, 'dec': dec, 'imsize': imsize, 'fmax': fmax}
+            pdict['crosshair'] = (0, 0)
+            if info['basename'] is not None:
+                pdict['tltext'] = info['basename']
+            plotinfo.append(pdict)
+
+        """ Make the multipanel plot """
+        self.plot_multipanel(plotinfo, **kwargs)
 
     # -----------------------------------------------------------------------
 
