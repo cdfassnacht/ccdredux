@@ -1233,6 +1233,7 @@ class CCDSet(list):
             else:
                 ax = axes[col]
             if i < len(self):
+                print(self[i].infile)
                 self.plot_panel(self[i], plotinfo[i], ax=ax, mode=mode,
                                 axlabel=False, **kwargs)
             else:
