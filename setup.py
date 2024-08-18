@@ -9,7 +9,7 @@ setuptools.setup(
     author='Chris Fassnacht',
     author_email='cdfassnacht@ucdavis.edu',
     description='Code for doing CCD data reduction',
-    long_description=long_description,
+    # long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/cdfassnacht/ccdredux',
     packages=setuptools.find_packages(),
