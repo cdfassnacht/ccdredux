@@ -18,11 +18,11 @@ setuptools.setup(
         'License :: OSI Approved :: MIT License',
         'Operating System :: OS Independent',
     ],
-    python_requires='>=3.6',
+    # python_requires='>=3.6',
     install_requires=[
-        'numpy>=1.10',
-        'scipy>=1.1',
-        'astropy>=3.1',
-        'matplotlib>=3.0'
+        'numpy', #>=1.10',
+        'scipy', #>=1.1',
+        'astropy', #>=3.1',
+        'matplotlib' #>=3.0'
     ],
 )
