@@ -128,7 +128,7 @@ class CCDSet(list):
 
         """ Load the data into the object """
         if verbose:
-            print('')
+            # print('')
             print('Loading data...')
         for f, info in zip(inlist, self.datainfo):
             if isinstance(f, (pf.PrimaryHDU, pf.ImageHDU, WcsHDU, Image)):
