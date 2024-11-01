@@ -73,7 +73,7 @@ class CCDSet(list):
             if isinstance(inlist[0], str):
                 for f in inlist:
                     if prefix is not None:
-                        name = '%s%s' % (prefix, f)
+                        name = '%s%s' % (prefix, str(f))
                     else:
                         name = str(f)
                     if suffix is not None:
@@ -675,7 +675,7 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def make_skyflat(self, outfile='SkyFlat.fits', biasfile=None,
+    def make_skyflat(self, outfile='SkyFlat.fits', biasfile=None, flatfile=None,
                      normalize='sigclip', trimsec=None, **kwargs):
         """
 
@@ -692,11 +692,12 @@ class CCDSet(list):
         """ Make the first flat """
         if self.objmasks is not None:
             self.make_flat(outfile=outfile, biasfile=biasfile,
-                           normalize=normalize, trimsec=trimsec, **kwargs)
+                           flatfile=flatfile, normalize=normalize,
+                           trimsec=trimsec, **kwargs)
             return
         else:
             flat0 = 'FlatInit.fits'
-            self.make_flat(outfile=flat0, biasfile=biasfile,
+            self.make_flat(outfile=flat0, biasfile=biasfile, flatfile=flatfile,
                            normalize=normalize, trimsec=trimsec, **kwargs)
 
         """ If the object masks don't exist then flat-field the data """
