@@ -372,6 +372,7 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def median_combine(self, outfile=None, outobj=None, method='median',
+                       reject=None, nlow=0, nhigh=0,
                        framemask=None,
                        trimsec=None, biasfile=None, flatfile=None,
                        usegain=False, usetexp=False, normalize=None,
