@@ -195,7 +195,7 @@ class CCDSet(list):
         """ Start by adding appropriate columns to the table """
         for key in infokeys:
             if key == texpkey or key == gainkey:
-                self.datainfo[key] = -1
+                self.datainfo[key] = -1.
             else:
                 self.datainfo[key] = None
 
@@ -208,7 +208,7 @@ class CCDSet(list):
                 elif key == 'exptime' or key == 'gain':
                     infokeys.remove(key)
                 elif key == texpkey or key == gainkey:
-                    info[key] = -1
+                    info[key] = -1.
                 else:
                     info[key] = 'N/A'
 
@@ -288,6 +288,25 @@ class CCDSet(list):
         rms_est = sqrt(var.sum()) / len(self)
         print('Estimated rms if files are averaged: %7f' % rms_est)
         print('')
+
+    # -----------------------------------------------------------------------
+
+    def imstats(self, verbose=True, **kwargs):
+        """
+
+        Calculates the clipped mean and rms for the images (typically
+        the full image in each case) and stores it in the datainfo table
+        """
+
+        self.datainfo['mean'] = -999.
+        self.datainfo['rms'] = -999.
+        for hdu, info in zip(self, self.datainfo):
+            hdu.sigma_clip(**kwargs)
+            info['mean'] = hdu.mean_clip
+            info['rms'] = hdu.rms_clip
+
+        if verbose:
+            print(self.datainfo['basename', 'mean', 'rms'])
 
     # -----------------------------------------------------------------------
 
@@ -371,29 +390,40 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def median_combine(self, outfile=None, outobj=None, method='median',
-                       reject=None, nlow=0, nhigh=0,
-                       framemask=None,
-                       trimsec=None, biasfile=None, flatfile=None,
-                       usegain=False, usetexp=False, normalize=None,
-                       zerosky=None, use_objmask=False, NaNmask=False,
-                       verbose=True, headverbose=True):
-        """ 
-        This is one of the primary methods of the CCDSet class.  It will:
+    def median_combine(self, biasfile=None, flatfile=None, **kwargs):
+        """
+        Legacy method, now replaced by the imcombine method
+        """
 
-          1. Subtract a bias frame (if the optional biasfile parameter is set)
-          2. Multiply by the gain, required to be in e-/ADU (if the optional
-              gain parameter is set)
-          3. Normalize the frame (if the optional normalize parameter is set)
-          4. Subtract the median (if the optional zeromedian parameter is set)
-          5. Median combine the resulting data
-          6. Write the output to a file if requested
+        self.imcombine(bias=biasfile, flat=flatfile, **kwargs)
+
+    # -----------------------------------------------------------------------
+
+    def imcombine(self, outfile=None, outobj=None, method='median',
+                  reject=None, nlow=0, nhigh=0,
+                  framemask=None,
+                  trimsec=None, bias=None, flat=None,
+                  usegain=False, usetexp=False, normalize=None,
+                  zerosky=None, use_objmask=False, NaNmask=False,
+                  verbose=True, headverbose=True):
+        """
+        This is one of the primary methods of the CCDSet class.  It combines
+        the images, perhaps after processing them first.  There are a number
+        of ways of flagging data and combining the data, modeled after the
+        iraf imcombine task.
+
+        The default behavior, i.e., by calling the method as "imcombine()"
+        will do a median combination of the images, with no processing and
+        no flagging.
 
         """
 
         """ Load any requested calibration files """
-        self.load_calib(biasfile, flatfile, verbose=verbose,
-                        headverbose=headverbose)
+        self.load_calib(bias, flat, verbose=verbose, headverbose=headverbose)
+
+        """ Set some default values """
+        gain = -1
+        texp = -1
 
         """
         Set up the container to hold the data stack that will be used to
@@ -414,7 +444,7 @@ class CCDSet(list):
 
         if verbose:
             print('')
-            print('median_combine: setting up stack for images')
+            print('imcombine: setting up stack for images')
             print('-------------------------------------------')
             print('Stack will have dimensions (%d, %d, %d)'
                   % (zsize, ysize, xsize))
@@ -422,19 +452,17 @@ class CCDSet(list):
         """ Loop over the frames to create the stack """
         count = 0
         for i in range(self.nfiles):
+            """ Skip this frame if it's not in the frame mask """
             if not framemask[i]:
                 continue
-            
-            """ Process the data, possibly only partially, if desired """
+
+            """ Set the gain and/or exposure time if requested """
             if usegain:
                 gain = self.datainfo['gain'][i]
-            else:
-                gain = -1
             if usetexp:
                 texp = self.datainfo['texp'][i]
-            else:
-                texp = -1
 
+            """ Process the data, possibly only partially, if desired """
             tmp = self[i].process_data(bias=self.bias, gain=gain, texp=texp,
                                        flat=self.flat, trimsec=trimsec,
                                        verbose=verbose)
@@ -443,7 +471,7 @@ class CCDSet(list):
             if use_objmask:
                 if self.objmasks is None:
                     raise ValueError('\n Run make_objmasks first\n ')
-                tmp.apply_pixmask(self.objmasks[i])
+                tmp.apply_pixmask(self.objmasks[i], badval=1)
                 NaNmask = True
 
             """ Normalize if requested """
@@ -465,46 +493,65 @@ class CCDSet(list):
         if verbose:
             print('')
 
-        """ Actually form the median (or sum, if that was requested) """
+        """ Do pixel rejection based on image statistics if requested """
+        if reject is not None:
+            NaNmask = True
+            foo = stack[:, 1780, 1041]
+            foo.sort()
+            print(foo)
+            if reject == 'minmax' and (nhigh>0 or nlow>0):
+                print('Doing minmax rejection with nhigh=%d' % nhigh)
+                stack.sort(axis=0)
+                if nlow>0:
+                    stack[:nlow] = np.nan
+                if nhigh>0:
+                    stack[-nhigh:] = np.nan
+                goo = stack[:, 1780, 1041]
+                goo.sort()
+                print(goo)
+
+        """ Set up the combination method """
         if method == 'sum':
             if NaNmask:
-                if verbose:
-                    print('median_combine: Computing summed frame using NaN'
-                          ' masking')
-                    print('    Can take a while...')
-                outdat = np.nansum(stack, axis=0)
+                combfunc = np.nansum
             else:
-                if verbose:
-                    print('median_combine: Computing summed frame (can take '
-                          'a while)...')
-                outdat = np.sum(stack, axis=0)
-        else:
+                combfunc = np.sum
+        elif method[:3] == 'med':
             if NaNmask:
-                if verbose:
-                    print('median_combine: Computing median frame using NaN '
-                          'masking')
-                    print('    Can take a while...')
-                outdat = np.nanmedian(stack, axis=0)
+                combfunc = np.nanmedian
             else:
-                if verbose:
-                    print('median_combine: Computing median frame (can take '
-                          'a while)...')
-                outdat = np.median(stack, axis=0)
+                combfunc = np.median
+        elif method[:3] == 'ave' or method[:4] == 'mean':
+            if NaNmask:
+                combfunc = np.nanmean
+            else:
+                combfunc = np.mean
+        else:
+            print('')
+            raise ValueError('"method" must be one of median, sum, or mean')
+
+        """ Combine the images """
+        if NaNmask:
+            add = ' with NaN masking.'
+        else:
+            add = '.'
+        print('imcombine: Combining using method=%s%s' % (method, add))
+        outdat = combfunc(stack, axis=0)
         del stack
 
-        """ Put the result into a HDU for saving or returning """
-        phdu = pf.PrimaryHDU(outdat)
+        """ Put the result into a WcsHDU for saving or returning """
+        outhdu = WcsHDU(outdat, wcsverb=False)
         if outobj is not None:
-            phdu.header['object'] = outobj
+            outhdu.header['object'] = outobj
 
         """ Write the output median file or return HDU """
         if outfile is not None:
-            phdu.writeto(outfile, output_verify='ignore', overwrite=True)
+            outhdu.writeto(outfile)
             if verbose:
                 print('    ... Wrote output to %s.' % outfile)
             return None
         else:
-            return phdu
+            return outhdu
     
     # -----------------------------------------------------------------------
 
@@ -554,10 +601,10 @@ class CCDSet(list):
         """
 
         """  Call median_combine """
-        hdu = self.median_combine(outfile=outfile, biasfile=biasfile,
-                                  normalize=normalize, trimsec=trimsec,
-                                  framemask=framemask, use_objmask=use_objmask,
-                                  flatfile=flatfile, **kwargs)
+        hdu = self.imcombine(outfile=outfile, bias=biasfile,
+                             normalize=normalize, trimsec=trimsec,
+                             framemask=framemask, use_objmask=use_objmask,
+                             flat=flatfile, **kwargs)
 
         if hdu is not None:
             return hdu
@@ -565,7 +612,7 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def apply_calib(self, outfiles=None, trimsec=None, biasfile=None,
-                    usegain=False, flatfile=None, fringefile=None,
+                    usegain=False, usetexp=False, flatfile=None, fringefile=None,
                     darkskyfile=None, zerosky=None, caldir=None, flip=None,
                     pixscale=0.0, rakey='ra', deckey='dec',
                     verbose=True):
@@ -622,10 +669,19 @@ class CCDSet(list):
             if usegain:
                 gain = self.datainfo['gain'][i]
             else:
-                gain = -1
+                gain = -1.
+            if usetexp:
+                try:
+                    texp = self.datainfo['texp'][i]
+                except KeyError:
+                    print('WARNING: No exposure time info found')
+                    texp = -1.
+            else:
+                texp = -1.
 
+            print('gain = ', gain)
             tmp = hdu.process_data(trimsec=trimsec, bias=self.bias,
-                                   gain=gain, texp=self.datainfo['texp'][i],
+                                   gain=gain, texp=texp,
                                    flat=self.flat, fringe=self.fringe,
                                    darkskyflat=self.darkskyflat,
                                    zerosky=zerosky, flip=flip, 
@@ -644,7 +700,7 @@ class CCDSet(list):
         if outfiles is not None:
             return None
         else:
-            return outlist
+            return CCDSet(outlist)
 
         # For LRIS B
         #  x1 = [400, 51, 51, 400]
@@ -657,7 +713,12 @@ class CCDSet(list):
     def make_objmasks(self, nsig=0.7, bpmlist=None, verbose=True):
         """
 
-        Creates a list of object masks
+        Creates object masks for each image in this structure.  For the
+        masks, a value of 1 indicates where there is significant flux
+        associated with an object in the image (star, galaxy, etc.) and
+        a value of 0 indicates blank sky.
+
+        The object masks are stored in a list
 
         """
 
@@ -669,8 +730,12 @@ class CCDSet(list):
             else:
                 bpm = None
             objmasks.append(hdu.make_objmask(nsig=nsig, bpm=bpm))
-            if verbose and hdu.infile is not None:
-                print(hdu.infile)
+            if verbose:
+                if hdu.infile is not None:
+                    filename = hdu.infile
+                else:
+                    filename = 'File %d' % (i + 1)
+                print('Making object mask for %s' % filename)
 
         self.objmasks = objmasks
 
