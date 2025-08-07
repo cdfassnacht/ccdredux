@@ -496,9 +496,10 @@ class CCDSet(list):
         """ Do pixel rejection based on image statistics if requested """
         if reject is not None:
             NaNmask = True
-            foo = stack[:, 1780, 1041]
-            foo.sort()
-            print(foo)
+            """ Temporary debugging statements """
+            # foo = stack[:, 1780, 1041]
+            # foo.sort()
+            # print(foo)
             if reject == 'minmax' and (nhigh>0 or nlow>0):
                 print('Doing minmax rejection with nhigh=%d' % nhigh)
                 stack.sort(axis=0)
@@ -506,9 +507,10 @@ class CCDSet(list):
                     stack[:nlow] = np.nan
                 if nhigh>0:
                     stack[-nhigh:] = np.nan
-                goo = stack[:, 1780, 1041]
-                goo.sort()
-                print(goo)
+                """ Temporary debugging statements """
+                # goo = stack[:, 1780, 1041]
+                # goo.sort()
+                # print(goo)
 
         """ Set up the combination method """
         if method == 'sum':
