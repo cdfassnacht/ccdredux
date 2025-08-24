@@ -90,6 +90,9 @@ class CCDSet(list):
                     else:
                         filelist.append('N/A')
                 self.datainfo['infile'] = filelist
+            elif isinstance(inlist[0], np.ndarray):
+                for i in range(len(inlist)):
+                    filelist.append('N/A')
         elif isinstance(inlist, Table):
             if filecol is None:
                 raise ValueError('Input list is a Table but filename column '
@@ -132,6 +135,8 @@ class CCDSet(list):
             print('Loading data...')
         for f, info in zip(inlist, self.datainfo):
             if isinstance(f, (pf.PrimaryHDU, pf.ImageHDU, WcsHDU, Image)):
+                infile = f
+            elif isinstance(f, np.ndarray):
                 infile = f
             else:
                 infile = info['infile']
@@ -181,7 +186,17 @@ class CCDSet(list):
         if verbose:
             print('')
             self.print_summary(keylist)
-            
+
+        """
+        Set up a default header for output files.
+        This is keywords to keep if they are in the existing files.  They
+         don't include any WCS keywords, since those are handled by other
+         parts of the code
+        """
+        self.hdr0 = ['object', 'instrume', 'telescop', 'date-obs', 'mjd-obs',
+                     'utc', 'airmass', 'equinox', 'el', 'az', 'filter',
+                     gainkey, texpkey]
+
     # -----------------------------------------------------------------------
 
     def read_infokeys(self, infokeys, texpkey, gainkey):
@@ -261,6 +276,25 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
+    def imstats(self, verbose=True, **kwargs):
+        """
+
+        Calculates the clipped mean and rms for the images (typically
+        the full image in each case) and stores it in the datainfo table
+        """
+
+        self.datainfo['mean'] = -999.
+        self.datainfo['rms'] = -999.
+        for hdu, info in zip(self, self.datainfo):
+            hdu.sigma_clip(**kwargs)
+            info['mean'] = hdu.mean_clip
+            info['rms'] = hdu.rms_clip
+
+        if verbose:
+            print(self.datainfo['basename', 'mean', 'rms'])
+
+    # -----------------------------------------------------------------------
+
     def rms_summary(self, statradec, statsize, centtype='radec', sizetype=None):
         """
         Calculates the rms in a specifiec region (typically defined to be
@@ -289,24 +323,25 @@ class CCDSet(list):
         print('Estimated rms if files are averaged: %7f' % rms_est)
         print('')
 
-    # -----------------------------------------------------------------------
+    #  ------------------------------------------------------------------------
 
-    def imstats(self, verbose=True, **kwargs):
+    def make_outlist(self, intext, outtext, outdir=None):
+        """
+        Makes an output filelist from the input filelist (if one exists) by
+        replacing the appropriate part(s) of each input filename with the
+        desired output file designator.
+        For example, for an input list of ff*fits this method could produce
+        corresponding bgsub*fits or ff*_wht.fits.
         """
 
-        Calculates the clipped mean and rms for the images (typically
-        the full image in each case) and stores it in the datainfo table
-        """
-
-        self.datainfo['mean'] = -999.
-        self.datainfo['rms'] = -999.
-        for hdu, info in zip(self, self.datainfo):
-            hdu.sigma_clip(**kwargs)
-            info['mean'] = hdu.mean_clip
-            info['rms'] = hdu.rms_clip
-
-        if verbose:
-            print(self.datainfo['basename', 'mean', 'rms'])
+        outfiles = []
+        for f in self.datainfo['basename']:
+            if outdir is not None:
+                outf = os.path.join(outdir, f.replace(intext, outtext))
+            else:
+                outf = f.replace(intext, outtext)
+            outfiles.append(outf)
+        return outfiles
 
     # -----------------------------------------------------------------------
 
@@ -400,7 +435,7 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def imcombine(self, outfile=None, outobj=None, method='median',
-                  reject=None, nlow=0, nhigh=0,
+                  reject=None, nlow=0, nhigh=0, nsig=3.,
                   framemask=None,
                   trimsec=None, bias=None, flat=None,
                   usegain=False, usetexp=False, normalize=None,
@@ -511,6 +546,22 @@ class CCDSet(list):
                 # goo = stack[:, 1780, 1041]
                 # goo.sort()
                 # print(goo)
+            elif reject == 'sigclip':
+                NaNmask = True
+                print('Doing sigclip rejection with nsig=%4.1f' % nsig)
+                std = np.nanstd(stack, axis=0)
+                med = np.nanmedian(stack, axis=0)
+                N = np.isfinite(stack).sum()
+                Ndiff = 1
+                while Ndiff > 0:
+                    for i in range(zsize):
+                        mask = np.fabs(stack[i] - med) > nsig * std
+                        stack[i][mask] = np.nan
+                    std = np.nanstd(stack, axis=0)
+                    med = np.nanmedian(stack, axis=0)
+                    Nnew = np.isfinite(stack).sum()
+                    Ndiff = N - Nnew
+                    N = Nnew
 
         """ Set up the combination method """
         if method == 'sum':
@@ -557,44 +608,33 @@ class CCDSet(list):
     
     # -----------------------------------------------------------------------
 
-    def make_bias(self, outfile=None, trimsec=None, **kwargs):
+    def make_bias(self, **kwargs):
         """ 
 
         This function median-combines the data to create a master dark/bias
 
-        Optional inputs:
-          outfile - output filename (default='Bias.fits')
-          trimsec - a four-element list or array: [x1, y1, x2, y2] if something
-                    smaller than the full frame is desired.  The coordinates
-                    define the lower-left (x1, y1) and upper right (x2, y2)
-                    corners of the trim section.
-
+        For optional inputs, see imcombine documentation.
         """
 
-        hdu = self.median_combine(outfile=outfile, trimsec=trimsec, **kwargs)
+        hdu = self.imcombine(**kwargs)
 
         if hdu is not None:
             return hdu
 
     # -----------------------------------------------------------------------
 
-    def make_flat(self, outfile=None, biasfile=None, flatfile=None,
-                  normalize='sigclip', trimsec=None, framemask=None,
-                  use_objmask=False, **kwargs):
+    def make_flat(self, normalize='sigclip', **kwargs):
         """ 
 
         Combine the data in a way that is consistent with how you would make
-         a flat-field frame
+         a flat-field frame.
+        This method is just a wrapper for the imcombine method, but with the
+         default value of the normalize parameter to something besides None.
+        For help with the parameters in the **kwargs, see the imcombine method
         NOTE: For making a sky flat from science data, see the make_skyflat
          method below
 
         Optional inputs:
-          outfile      - output filename (default="Flat.fits")
-          biasfile     - input bias file to subtract before combining. 
-                          (default=None)
-          gain         - gain factor to convert ADU to e-.  Default value
-                          is None, since there is no advantage to converting
-                          the flat-field frames to units of electrons
           normalize    - technique by which to normalize each frame before
                          combining.  Choices are:
                           'sigclip' - use clipped mean (default)
@@ -603,10 +643,7 @@ class CCDSet(list):
         """
 
         """  Call median_combine """
-        hdu = self.imcombine(outfile=outfile, bias=biasfile,
-                             normalize=normalize, trimsec=trimsec,
-                             framemask=framemask, use_objmask=use_objmask,
-                             flat=flatfile, **kwargs)
+        hdu = self.imcombine(normalize=normalize, **kwargs)
 
         if hdu is not None:
             return hdu
@@ -614,10 +651,10 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def apply_calib(self, outfiles=None, trimsec=None, biasfile=None,
-                    usegain=False, usetexp=False, flatfile=None, fringefile=None,
-                    darkskyfile=None, zerosky=None, caldir=None, flip=None,
-                    pixscale=0.0, rakey='ra', deckey='dec',
-                    verbose=True):
+                    usegain=False, usetexp=False, flatfile=None, bpm=None,
+                    fringefile=None,darkskyfile=None, zerosky=None, caldir=None,
+                    flip=None,pixscale=0.0, rakey='ra', deckey='dec',
+                    verbose=True, **kwargs):
         """
 
         Applies calibration corrections to the frames.
@@ -656,8 +693,10 @@ class CCDSet(list):
         """
 
         """ Read in calibration frames if they have been selected """
+        if verbose:
+            print('')
         self.load_calib(biasfile, flatfile, fringefile, darkskyfile,
-                        caldir=caldir, verbose=verbose)
+                        bpm, caldir=caldir, verbose=verbose)
 
         """ Prepare to calibrate the data """
         if verbose:
@@ -681,14 +720,15 @@ class CCDSet(list):
             else:
                 texp = -1.
 
-            print('gain = ', gain)
+            # print('gain = ', gain)
             tmp = hdu.process_data(trimsec=trimsec, bias=self.bias,
-                                   gain=gain, texp=texp,
+                                   gain=gain, texp=texp, bpm=self.bpmglobal,
                                    flat=self.flat, fringe=self.fringe,
                                    darkskyflat=self.darkskyflat,
                                    zerosky=zerosky, flip=flip, 
                                    pixscale=pixscale, rakey=rakey,
-                                   deckey=deckey, verbose=verbose)
+                                   deckey=deckey, verbose=verbose,
+                                   **kwargs)
             if hdu.infile is not None:
                 tmp.infile = hdu.infile
 
@@ -709,6 +749,49 @@ class CCDSet(list):
         #  x2 = 1068
         #  y1 = 775
         #  y2 = 3200
+
+    # -----------------------------------------------------------------------
+
+    def smooth(self, size, smtype='median', outkeys='default', outfiles=None,
+               verbose=True):
+        """
+
+        Smooths each of the images in the CCDSet structure and, if requested,
+        saves the results to the provided output files
+
+        """
+
+        if verbose:
+            print('Smoothing data using %s smoothing with kernal size %d'
+                  % (smtype, size))
+
+        """ Set up what header information to keep in the smoothed files """
+        if outkeys is None:
+            keeplist = None
+        elif outkeys == 'default':
+            keeplist = self.hdr0
+        else:
+            keeplist = outkeys
+
+        """ Loop through the images, smoothing each one """
+        smlist = []
+        for i, img in enumerate(self):
+            hdr = img.make_hdr_wcs(img.header, img.wcsinfo, keeplist=keeplist)
+            smdata = img.smooth(size, smtype=smtype)
+            smlist.append(WcsHDU(smdata, inhdr=hdr, wcsverb=False))
+            if verbose:
+                if img.infile is not None:
+                    filename = img.infile
+                else:
+                    filename = 'Image %d' % (i + 1)
+                print('  Smoothing %s' % filename)
+
+        """ Either write the smoothed data to output files or return them """
+        if outfiles is not None:
+            for img, f in zip(smlist, outfiles):
+                img.save(f)
+        else:
+            return CCDSet(smlist)
 
     # -----------------------------------------------------------------------
 
@@ -759,13 +842,13 @@ class CCDSet(list):
 
         """ Make the first flat """
         if self.objmasks is not None:
-            self.make_flat(outfile=outfile, biasfile=biasfile,
-                           flatfile=flatfile, normalize=normalize,
+            self.make_flat(outfile=outfile, bias=biasfile,
+                           flat=flatfile, normalize=normalize,
                            trimsec=trimsec, **kwargs)
             return
         else:
             flat0 = 'FlatInit.fits'
-            self.make_flat(outfile=flat0, biasfile=biasfile, flatfile=flatfile,
+            self.make_flat(outfile=flat0, bias=biasfile, flat=flatfile,
                            normalize=normalize, trimsec=trimsec, **kwargs)
 
         """ If the object masks don't exist then flat-field the data """
@@ -790,7 +873,7 @@ class CCDSet(list):
         print('Making final sky flat')
         for i, hdu in enumerate(self):
             hdu.data = orig[i].copy()
-        self.make_flat(outfile=outfile, biasfile=biasfile, normalize=normalize,
+        self.make_flat(outfile=outfile, bias=biasfile, normalize=normalize,
                        trimsec=trimsec, **kwargs)
 
     # -----------------------------------------------------------------------
@@ -844,7 +927,7 @@ class CCDSet(list):
             framemask[indlist[mask]] = True
             # Original code below (normalized inputs rather than subtracting
             #    sky)
-            # skyhdu = self.make_flat(outfile=None, biasfile=biasfile,
+            # skyhdu = self.make_flat(outfile=None, bias=biasfile,
             #                         framemask=framemask, NaNmask=NaNmask)
             # skyhdu.data[~np.isfinite(skyhdu.data)] = 0.
             # scalefac = np.median(data) / np.median(skyhdu.data)
