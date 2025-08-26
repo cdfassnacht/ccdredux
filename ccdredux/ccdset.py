@@ -373,8 +373,8 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def load_calib(self, biasfile=None, flatfile=None, fringefile=None,
-                   darkskyfile=None, bpmglobfile=None, caldir=None, hext=None,
+    def load_calib(self, bias=None, flat=None, fringe=None,
+                   darksky=None, bpmglob=None, caldir=None, hext=None,
                    verbose=True, headverbose=True):
         """
 
@@ -392,45 +392,36 @@ class CCDSet(list):
         """ Read in calibration frames if they have been selected """
         if headverbose:
             print('Loading any requested calibration files')
-        if biasfile is not None:
-            self.bias = self.read_calfile(biasfile, 'bias/dark', hext=hext,
+        if bias is not None:
+            self.bias = self.read_calfile(bias, 'bias/dark', hext=hext,
                                           caldir=caldir, verbose=verbose)
             if self.bias is None:
-                raise OSError('Error reading %s' % biasfile)
+                raise OSError('Error reading %s' % bias)
 
-        if bpmglobfile is not None:
+        if bpmglob is not None:
             self.bpmglobal = \
-                self.read_calfile(bpmglobfile, 'global bpm',  hext=hext,
+                self.read_calfile(bpmglob, 'global bpm',  hext=hext,
                                   caldir=caldir, verbose=verbose)
             if self.bpmglobal is None:
-                raise OSError('Error reading %s' % bpmglobfile)
+                raise OSError('Error reading %s' % bpmglob)
 
-        if flatfile is not None:
-            self.flat = self.read_calfile(flatfile, 'flat-field', hext=hext,
+        if flat is not None:
+            self.flat = self.read_calfile(flat, 'flat-field', hext=hext,
                                           caldir=caldir)
             if self.flat is None:
-                raise OSError('Error reading %s' % flatfile)
+                raise OSError('Error reading %s' % flat)
 
-        if fringefile is not None:
-            self.fringe = self.read_calfile(fringefile, 'fringe', caldir=caldir,
+        if fringe is not None:
+            self.fringe = self.read_calfile(fringe, 'fringe', caldir=caldir,
                                             hext=hext)
             if self.fringe is None:
-                raise OSError('Error reading %s' % fringefile)
+                raise OSError('Error reading %s' % fringe)
 
-        if darkskyfile is not None:
-            self.darkskyflat = self.read_calfile(darkskyfile, 'dark-sky flat',
+        if darksky is not None:
+            self.darkskyflat = self.read_calfile(darksky, 'dark-sky flat',
                                                  caldir=caldir, hext=hext)
             if self.darkskyflat is None:
-                raise OSError('Error reading %s' % darkskyfile)
-
-    # -----------------------------------------------------------------------
-
-    def median_combine(self, biasfile=None, flatfile=None, **kwargs):
-        """
-        Legacy method, now replaced by the imcombine method
-        """
-
-        self.imcombine(bias=biasfile, flat=flatfile, **kwargs)
+                raise OSError('Error reading %s' % darksky)
 
     # -----------------------------------------------------------------------
 
@@ -608,6 +599,15 @@ class CCDSet(list):
     
     # -----------------------------------------------------------------------
 
+    def median_combine(self, bias=None, flatfile=None, **kwargs):
+        """
+        Legacy method, now replaced by the imcombine method
+        """
+
+        self.imcombine(bias=bias, flat=flatfile, **kwargs)
+
+    # -----------------------------------------------------------------------
+
     def make_bias(self, **kwargs):
         """ 
 
@@ -650,9 +650,9 @@ class CCDSet(list):
     
     # -----------------------------------------------------------------------
 
-    def apply_calib(self, outfiles=None, trimsec=None, biasfile=None,
-                    usegain=False, usetexp=False, flatfile=None, bpm=None,
-                    fringefile=None,darkskyfile=None, zerosky=None, caldir=None,
+    def apply_calib(self, outfiles=None, trimsec=None, bias=None,
+                    usegain=False, usetexp=False, flat=None, bpm=None,
+                    fringe=None,darksky=None, zerosky=None, caldir=None,
                     flip=None,pixscale=0.0, rakey='ra', deckey='dec',
                     verbose=True, **kwargs):
         """
@@ -665,10 +665,10 @@ class CCDSet(list):
 
           Keyword      Calibration step
           ----------  ----------------------------------
-          biasfile    Bias subtraction
-          flatfile    Flat-field correction
-          fringefile  Fringe subtraction
-          darkskyfile Dark-sky flat correction
+          bias        Bias subtraction
+          flat        Flat-field correction
+          fringe      Fringe subtraction
+          darksky     Dark-sky flat correction
           skysub      Subtract mean sky level if keyword set to True
           texp_key    Divide by exposure time (set keyword to fits header name)
           caldir      Directory containing the calibration files.  The default
@@ -695,7 +695,7 @@ class CCDSet(list):
         """ Read in calibration frames if they have been selected """
         if verbose:
             print('')
-        self.load_calib(biasfile, flatfile, fringefile, darkskyfile,
+        self.load_calib(bias, flat, fringe, darksky,
                         bpm, caldir=caldir, verbose=verbose)
 
         """ Prepare to calibrate the data """
@@ -826,12 +826,18 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def make_skyflat(self, outfile='SkyFlat.fits', biasfile=None, flatfile=None,
-                     normalize='sigclip', trimsec=None, **kwargs):
+    def _make_skyflat_objmask(self, outfile='SkyFlat.fits', bias=None,
+                              flat=None, normalize='sigclip', trimsec=None,
+                              **kwargs):
         """
 
-        Creates a flat-field frame from the science exposures.  This is a
-        one or three step process:
+        Makes a sky flat by combining a stack of science images.
+        In this case the pixels associated with objects in the images are
+         masked out by using the statistics of each exposure, in contrast to
+         the _make_skyflat_stackstats method, which uses the statistics of
+         the stack to identify the high pixels.
+
+        This is a process that takes either 1 step or 3 steps.
            1.  Make an initial flat.  If the object masks are already made,
                this is the last step, otherwise continue to step 2
            2.  Make object masks so that objects in the field do not contribute
@@ -842,43 +848,104 @@ class CCDSet(list):
 
         """ Make the first flat """
         if self.objmasks is not None:
-            self.make_flat(outfile=outfile, bias=biasfile,
-                           flat=flatfile, normalize=normalize,
-                           trimsec=trimsec, **kwargs)
+            self.make_flat(outfile=outfile, bias=bias, flat=flat,
+                           normalize=normalize, trimsec=trimsec, **kwargs)
             return
         else:
-            flat0 = 'FlatInit.fits'
-            self.make_flat(outfile=flat0, bias=biasfile, flat=flatfile,
-                           normalize=normalize, trimsec=trimsec, **kwargs)
+            """ If the object masks don't exist then flat-field the data """
+            self.flat = \
+                self.make_flat(bias=bias, flat=flat, normalize=normalize,
+                               trimsec=trimsec, **kwargs)
 
-        """ If the object masks don't exist then flat-field the data """
-        print('')
-        caldat = self.apply_calib(trimsec=trimsec, biasfile=biasfile,
-                                  flatfile=flat0)
-        orig = []
-        for i, hdu in enumerate(self):
-            orig.append(hdu.data.copy())
-            hdu.data = caldat[i].data.copy()
+            print('')
+            caldat = self.apply_calib(trimsec=trimsec, bias=bias)
 
-        """ Make the object masks with the initially calibrated data """
-        print('')
-        print('Making object masks')
-        self.make_objmasks()
+            orig = []
+            for i, hdu in enumerate(self):
+                orig.append(hdu.data.copy())
+                hdu.data = caldat[i].data.copy()
 
-        """
-        Now reset the data, and then make a new flat but with the object
-        masks this time
-        """
-        print('')
-        print('Making final sky flat')
-        for i, hdu in enumerate(self):
-            hdu.data = orig[i].copy()
-        self.make_flat(outfile=outfile, bias=biasfile, normalize=normalize,
-                       trimsec=trimsec, **kwargs)
+            """ Make the object masks with the initially calibrated data """
+            print('')
+            print('Making object masks')
+            self.make_objmasks()
+
+            """
+            Now reset the data, and then make a new flat but with the object
+            masks this time
+            """
+            print('')
+            print('Making final sky flat')
+            for i, hdu in enumerate(self):
+                hdu.data = orig[i].copy()
+            self.make_flat(outfile=outfile, bias=bias, normalize=normalize,
+                           trimsec=trimsec, **kwargs)
 
     # -----------------------------------------------------------------------
 
-    def skysub_nir(self, biasfile=None, objmasks=None, ngroup=5,
+    def _make_skyflat_stackstats(self, smosize, outroot, smtype='median',
+                                 nhigh=1, verbose=True):
+        """
+        Makes a sky flat by combining a stack of science images.
+        In this case the pixels associated with objects in the images are
+         masked out by using the statistics of the stack to identify high
+         pixels, in contrast to the _make_skyflat_objmask method, which
+         uses the statistics of individual exposures to identify the high
+         pixels
+
+        """
+
+        """ Smooth the data """
+        if verbose:
+            print('')
+        smosize = 9
+        smo = self.smooth(smosize, smtype=smtype, verbose=verbose)
+        if verbose:
+            print('')
+            smo.imstats()
+
+        """ Create a mean stack with high-pixel rejection and a median stack """
+        smo.imcombine(normalize='sigclip', method='mean', reject='minmax',
+                      nhigh=nhigh, outfile='%s_clipmean.fits' % outroot)
+        smo.imcombine(normalize='sigclip', method='median',
+                      outfile='%s_median.fits' % outroot)
+
+    # -----------------------------------------------------------------------
+
+    def make_skyflat(self, outroot='SkyFlat', method='stackstats', bias=None,
+                     flat=None, normalize='sigclip', smosize=9, smtype='median',
+                     nhigh=1, trimsec=None, verbose=True, **kwargs):
+        """
+
+        Creates a flat-field frame from the science exposures, which requires
+         masking out pixels associated with objects in the image so that they
+         don't bias the output flat-field file.
+        There] are two possible techniques for masking out the objects
+         (i.e., the high pixels) in the images.  The "method" parameter
+         designates which technique will be used:
+         1. method='stackstats' - Statistics are computed vertically through
+            a stack of smoothed versions of the images.  This technique
+            creates two output flats.  The first is just a straight median
+            of the stacked images.  The second is a clipped mean, where the
+            clipping is done by rejecting the nhigh highest pixels in the
+            vertical stack corresponding to each output pixel.
+         2. method='objmask' - Statistics are computed for each individual
+            image and object masks are created via the make_objmasks method
+
+        """
+
+        if method == 'objmask':
+            outfile = '%s.fits' % outroot
+            self._make_skyflat_objmask(outfile=outfile, bias=bias, flat=flat,
+                                       normalize=normalize, trimsec=trimsec,
+                                       **kwargs)
+        else:
+            self._make_skyflat_stackstats(smosize, outroot, smtype=smtype,
+                                          nhigh=nhigh, verbose=verbose)
+
+    # -----------------------------------------------------------------------
+
+    def skysub_nir(self, bias=None, objmasks=None, ngroup=5,
                    outfiles=None, verbose=True):
         """
 
@@ -927,7 +994,7 @@ class CCDSet(list):
             framemask[indlist[mask]] = True
             # Original code below (normalized inputs rather than subtracting
             #    sky)
-            # skyhdu = self.make_flat(outfile=None, bias=biasfile,
+            # skyhdu = self.make_flat(outfile=None, bias=bias,
             #                         framemask=framemask, NaNmask=NaNmask)
             # skyhdu.data[~np.isfinite(skyhdu.data)] = 0.
             # scalefac = np.median(data) / np.median(skyhdu.data)
