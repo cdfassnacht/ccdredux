@@ -3,7 +3,7 @@
 Defines a CCDSet class that can be used for the standard calibration steps
 for CCD and similar data sets
 """
-
+import os.path
 import sys
 from os import path
 import numpy as np
@@ -337,7 +337,7 @@ class CCDSet(list):
         outfiles = []
         for f in self.datainfo['basename']:
             if outdir is not None:
-                outf = os.path.join(outdir, f.replace(intext, outtext))
+                outf = path.join(outdir, f.replace(intext, outtext))
             else:
                 outf = f.replace(intext, outtext)
             outfiles.append(outf)
@@ -388,44 +388,65 @@ class CCDSet(list):
         """
         if hext is None:
             hext = self.hext
+
+        """ Set up the calibration directories """
+        darkdir = None
+        flatdir = None
+        maskdir = None
+        fringedir = None
+        if caldir is not None:
+            if isinstance(caldir, dict):
+                if 'darkdir' in caldir.keys():
+                    darkdir = caldir['darkdir']
+                if 'flatdir' in caldir.keys():
+                    flatdir = caldir['flatdir']
+                if 'maskdir' in caldir.keys():
+                    maskdir = caldir['maskdir']
+                if 'fringedir' in caldir.keys():
+                    fringedir = caldir['fringedir']
+            else:
+                darkdir = caldir
+                flatdir = caldir
+                maskdir = caldir
+                fringedir = caldir
             
         """ Read in calibration frames if they have been selected """
         if headverbose:
             print('Loading any requested calibration files')
         if bias is not None:
             self.bias = self.read_calfile(bias, 'bias/dark', hext=hext,
-                                          caldir=caldir, verbose=verbose)
+                                          caldir=darkdir, verbose=verbose)
             if self.bias is None:
                 raise OSError('Error reading %s' % bias)
 
         if bpmglob is not None:
             self.bpmglobal = \
                 self.read_calfile(bpmglob, 'global bpm',  hext=hext,
-                                  caldir=caldir, verbose=verbose)
+                                  caldir=maskdir, verbose=verbose)
             if self.bpmglobal is None:
                 raise OSError('Error reading %s' % bpmglob)
 
         if flat is not None:
             self.flat = self.read_calfile(flat, 'flat-field', hext=hext,
-                                          caldir=caldir)
+                                          caldir=flatdir)
             if self.flat is None:
                 raise OSError('Error reading %s' % flat)
 
         if fringe is not None:
-            self.fringe = self.read_calfile(fringe, 'fringe', caldir=caldir,
+            self.fringe = self.read_calfile(fringe, 'fringe', caldir=fringedir,
                                             hext=hext)
             if self.fringe is None:
                 raise OSError('Error reading %s' % fringe)
 
         if darksky is not None:
             self.darkskyflat = self.read_calfile(darksky, 'dark-sky flat',
-                                                 caldir=caldir, hext=hext)
+                                                 caldir=flatdir, hext=hext)
             if self.darkskyflat is None:
                 raise OSError('Error reading %s' % darksky)
 
     # -----------------------------------------------------------------------
 
-    def imcombine(self, outfile=None, outobj=None, method='median',
+    def imcombine(self, outfile=None, outdir=None, outobj=None, method='median',
                   reject=None, nlow=0, nhigh=0, nsig=3.,
                   framemask=None,
                   trimsec=None, bias=None, flat=None,
@@ -589,10 +610,15 @@ class CCDSet(list):
             outhdu.header['object'] = outobj
 
         """ Write the output median file or return HDU """
+        print(outdir)
         if outfile is not None:
-            outhdu.writeto(outfile)
+            if outdir is not None:
+                outf = path.join(outdir, outfile)
+            else:
+                outf = outfile
+            outhdu.writeto(outf)
             if verbose:
-                print('    ... Wrote output to %s.' % outfile)
+                print('    ... Wrote output to %s.' % outf)
             return None
         else:
             return outhdu
@@ -884,7 +910,7 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def _make_skyflat_stackstats(self, smosize, outroot, smtype='median',
-                                 nhigh=1, verbose=True):
+                                 nhigh=1, verbose=True, **kwargs):
         """
         Makes a sky flat by combining a stack of science images.
         In this case the pixels associated with objects in the images are
@@ -906,15 +932,17 @@ class CCDSet(list):
 
         """ Create a mean stack with high-pixel rejection and a median stack """
         smo.imcombine(normalize='sigclip', method='mean', reject='minmax',
-                      nhigh=nhigh, outfile='%s_clipmean.fits' % outroot)
+                      nhigh=nhigh, outfile='%s_clipmean.fits' % outroot,
+                      **kwargs)
         smo.imcombine(normalize='sigclip', method='median',
-                      outfile='%s_median.fits' % outroot)
+                      outfile='%s_median.fits' % outroot, **kwargs)
 
     # -----------------------------------------------------------------------
 
-    def make_skyflat(self, outroot='SkyFlat', method='stackstats', bias=None,
-                     flat=None, normalize='sigclip', smosize=9, smtype='median',
-                     nhigh=1, trimsec=None, verbose=True, **kwargs):
+    def make_skyflat(self, outroot='SkyFlat', method='stackstats',
+                     normalize='sigclip', smosize=9,
+                     smtype='median', nhigh=1, verbose=True,
+                     **kwargs):
         """
 
         Creates a flat-field frame from the science exposures, which requires
@@ -936,12 +964,12 @@ class CCDSet(list):
 
         if method == 'objmask':
             outfile = '%s.fits' % outroot
-            self._make_skyflat_objmask(outfile=outfile, bias=bias, flat=flat,
-                                       normalize=normalize, trimsec=trimsec,
-                                       **kwargs)
+            self._make_skyflat_objmask(outfile=outfile,
+                                       normalize=normalize, **kwargs)
         else:
             self._make_skyflat_stackstats(smosize, outroot, smtype=smtype,
-                                          nhigh=nhigh, verbose=verbose)
+                                          nhigh=nhigh, verbose=verbose,
+                                          **kwargs)
 
     # -----------------------------------------------------------------------
 
