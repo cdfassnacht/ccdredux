@@ -3,8 +3,8 @@
 Defines a CCDSet class that can be used for the standard calibration steps
 for CCD and similar data sets
 """
-import os.path
 import sys
+import os
 from os import path
 import numpy as np
 from math import floor, sqrt
@@ -613,6 +613,8 @@ class CCDSet(list):
         print(outdir)
         if outfile is not None:
             if outdir is not None:
+                if not path.isdir(outdir):
+                    os.makedirs(outdir)
                 outf = path.join(outdir, outfile)
             else:
                 outf = outfile
