@@ -790,7 +790,7 @@ class CCDSet(list):
         """
 
         if verbose:
-            print('Smoothing data using %s smoothing with kernal size %d'
+            print('Smoothing data using %s smoothing with kernel size %d'
                   % (smtype, size))
 
         """ Set up what header information to keep in the smoothed files """
@@ -911,10 +911,12 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def _make_skyflat_stackstats(self, smosize, outroot, smtype='median',
-                                 nhigh=1, verbose=True, **kwargs):
+    def _make_sky_stackstats(self, skytype, smosize, outroot, smtype='median',
+                             nhigh=1, verbose=True, **kwargs):
         """
-        Makes a sky flat by combining a stack of science images.
+        Combines sky files to make either a sky flat (for multiplicative
+         corrections) or a sky (for additive correction), depending on the
+         value of the skytype parameters.
         In this case the pixels associated with objects in the images are
          masked out by using the statistics of the stack to identify high
          pixels, in contrast to the _make_skyflat_objmask method, which
@@ -926,18 +928,29 @@ class CCDSet(list):
         """ Smooth the data """
         if verbose:
             print('')
-        smosize = 9
         smo = self.smooth(smosize, smtype=smtype, verbose=verbose)
         if verbose:
             print('')
             smo.imstats()
 
-        """ Create a mean stack with high-pixel rejection and a median stack """
-        smo.imcombine(normalize='sigclip', method='mean', reject='minmax',
-                      nhigh=nhigh, outfile='%s_clipmean.fits' % outroot,
-                      **kwargs)
-        smo.imcombine(normalize='sigclip', method='median',
-                      outfile='%s_median.fits' % outroot, **kwargs)
+        """
+        Create a mean stack with high-pixel rejection and a median stack
+        Before combining the images in the stack, the images are either
+         normalized (for a skyflat) or mean-subtracted for an additive
+         sky frame
+        """
+        if skytype == 'addsky':
+            smo.imcombine(zerosky='sigclip', method='mean', reject='minmax',
+                          nhigh=nhigh, outfile='%s_clipmean.fits' % outroot,
+                          **kwargs)
+            smo.imcombine(zerosky='sigclip', method='median',
+                          outfile='%s_median.fits' % outroot, **kwargs)
+        else:
+            smo.imcombine(normalize='sigclip', method='mean', reject='minmax',
+                          nhigh=nhigh, outfile='%s_clipmean.fits' % outroot,
+                          **kwargs)
+            smo.imcombine(normalize='sigclip', method='median',
+                          outfile='%s_median.fits' % outroot, **kwargs)
 
     # -----------------------------------------------------------------------
 
@@ -969,9 +982,9 @@ class CCDSet(list):
             self._make_skyflat_objmask(outfile=outfile,
                                        normalize=normalize, **kwargs)
         else:
-            self._make_skyflat_stackstats(smosize, outroot, smtype=smtype,
-                                          nhigh=nhigh, verbose=verbose,
-                                          **kwargs)
+            self._make_sky_stackstats('skyflat', smosize, outroot,
+                                      smtype=smtype,  nhigh=nhigh,
+                                      verbose=verbose, **kwargs)
 
     # -----------------------------------------------------------------------
 
