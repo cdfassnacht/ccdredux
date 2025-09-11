@@ -334,12 +334,34 @@ class CCDSet(list):
         corresponding bgsub*fits or ff*_wht.fits.
         """
 
+        """ Check the format of the input and output text """
+        if isinstance(intext, str):
+            inlist = [intext]
+        elif isinstance(intext, list):
+            inlist = intext
+        else:
+            raise TypeError('make_outlist: intext must be str or list')
+        if isinstance(outtext, str):
+            outlist = [outtext]
+        elif isinstance(outtext, list):
+            outlist = outtext
+        else:
+            raise TypeError('make_outlist: intext must be str or list')
+
+        if len(inlist) != len(outlist):
+            raise IndexError('make_outlist: input and output text lists'
+                             ' must be the same length')
+
         outfiles = []
         for f in self.datainfo['basename']:
+            tmp = f.copy()
+            for i, o in zip(inlist, outlist):
+                print(i, o)
+                tmp = tmp.replace(i, o)
             if outdir is not None:
-                outf = path.join(outdir, f.replace(intext, outtext))
+                outf = path.join(outdir, tmp)
             else:
-                outf = f.replace(intext, outtext)
+                outf = tmp
             outfiles.append(outf)
         return outfiles
 
