@@ -356,7 +356,6 @@ class CCDSet(list):
         for f in self.datainfo['basename']:
             tmp = f.copy()
             for i, o in zip(inlist, outlist):
-                print(i, o)
                 tmp = tmp.replace(i, o)
             if outdir is not None:
                 outf = path.join(outdir, tmp)
