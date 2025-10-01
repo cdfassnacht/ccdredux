@@ -65,6 +65,7 @@ class CCDSet(list):
         self.fringe = None
         self.darkskyflat = None
         self.objmasks = None
+        self.axlist = None
         
         """ Set up for loading the data """
         if isinstance(inlist, (list, tuple)):
@@ -127,6 +128,8 @@ class CCDSet(list):
                 self.datainfo.rename_column(filecol, 'infile')
         else:
             raise TypeError('\nERROR: Input is not in a valid format\n')
+
+        """ """
         self.datainfo['basename'] = self.datainfo['infile'].copy()
 
         """ Load the data into the object """
@@ -144,6 +147,8 @@ class CCDSet(list):
                          wcsverb=wcsverb, **kwargs)
             if tmp.basename is not None:
                 info['basename'] = tmp.basename
+            else:
+                info['basename'] = os.path.basename(info['infile'])
             self.append(tmp)
 
         """ Put the requested information into datainfo table """
@@ -653,7 +658,7 @@ class CCDSet(list):
         Legacy method, now replaced by the imcombine method
         """
 
-        self.imcombine(bias=bias, flat=flatfile, **kwargs)
+        return self.imcombine(bias=bias, flat=flatfile, **kwargs)
 
     # -----------------------------------------------------------------------
 
@@ -957,10 +962,10 @@ class CCDSet(list):
         """
         Create a mean stack with high-pixel rejection and a median stack
         Before combining the images in the stack, the images are either
-         normalized (for a skyflat) or mean-subtracted for an additive
-         sky frame
+         normalized (for a skyflat) or mean-subtracted (for an additive
+         sky frame)
         """
-        if skytype == 'addsky':
+        if skytype[:3] == 'add':
             smo.imcombine(zerosky='sigclip', method='mean', reject='minmax',
                           nhigh=nhigh, outfile='%s_clipmean.fits' % outroot,
                           **kwargs)
@@ -1009,6 +1014,26 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
+    def make_sky_from_sci(self, outroot='Sky', method='stackstats', smosize=9,
+                          smtype='median', nhigh=2, verbose=True, **kwargs):
+        """
+
+        Uses science frames to estimate the additive portion of the
+        instrumental response (as oppsed to the multiplicative component,
+        which can be derived from the flat-field frames
+
+        """
+
+        """ Do the image stacking """
+        if method == 'stackstats':
+            self._make_sky_stackstats('addsky', smosize, outroot, smtype=smtype,
+                                      nhigh=nhigh, verbose=verbose, **kwargs)
+        else:
+            raise ValueError('make_sky_from_sci - "stackstats" is the only'
+                             ' possible method at this time')
+
+    # -----------------------------------------------------------------------
+
     def skysub_nir(self, bias=None, objmasks=None, ngroup=5,
                    outfiles=None, verbose=True):
         """
@@ -1020,7 +1045,7 @@ class CCDSet(list):
         """
 
         """
-        If there are object masks, then Mask the input data, saving the
+        If there are object masks, then mask the input data, saving the
         originals
         """
         orig = []
@@ -1064,9 +1089,9 @@ class CCDSet(list):
             # scalefac = np.median(data) / np.median(skyhdu.data)
             # print('Scaling sky-flat data for %s by %f' %
             #       (hdu.infile, scalefac))
-            skyhdu = self.median_combine(zerosky='sigclip', verbose=False,
-                                         framemask=framemask, NaNmask=NaNmask,
-                                         headverbose=False)
+            skyhdu = self.imcombine(zerosky='sigclip', verbose=False,
+                                    framemask=framemask, NaNmask=NaNmask,
+                                    headverbose=False)
             hdu.sigma_clip()
             outdata = orig[i].data - hdu.mean_clip - skyhdu.data
             outlist.append(WcsHDU(outdata, hdu.header, verbose=False,
@@ -1424,6 +1449,7 @@ class CCDSet(list):
     # -----------------------------------------------------------------------
 
     def plot_multipanel(self, plotinfo, mode='radec', ncol=None, maxrows=None,
+                        markpos=False, xmark=None, ymark=None, markcolor='g',
                         outfile=None, panelsize=2.0, debug=False, **kwargs):
         """
 
@@ -1499,13 +1525,17 @@ class CCDSet(list):
         xsize = 1.0 / ncol - 0.005
         ysize = 1.0 / ny - 0.005
 
-        """ Loop through the images, plotting each one """
+        """ Prepare for plotting """
         fig, axes = plt.subplots(ny, ncol, figsize=figsize)
+        self.axlist = axes
         if debug:
             print(axes.shape)
         row = -1
+
+        """ Loop through the images, plotting each one """
         # for i, hdu in enumerate(self):
         for i in range(ny * ncol):
+            info = plotinfo[i]
             col = i % ncol
             if col == 0:
                 row += 1
@@ -1517,10 +1547,25 @@ class CCDSet(list):
                 ax = axes[col]
             if i < len(self):
                 print(self[i].infile)
-                self.plot_panel(self[i], plotinfo[i], ax=ax, mode=mode,
+                self.plot_panel(self[i], info, ax=ax, mode=mode,
                                 axlabel=False, **kwargs)
             else:
                 ax.set_axis_off()
+
+            """ Mark the a position if requested """
+            if markpos:
+                if xmark is None or ymark is None:
+                    if mode == 'xy' or mode == 'pix':
+                        imcent = (info['x_cent'], info['y_cent'])
+                        x1, y1, x2, y2 = \
+                            self[i].subim_bounds_xy(imcent, info['imsize'])
+                        xmark = info['x_cent'] - x1
+                        ymark = info['y_cent'] - y1
+                    else:
+                        xmark = 0
+                        ymark = 0
+                ax.axhline(ymark, color=markcolor)
+                ax.axvline(xmark, color=markcolor)
         plt.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005)
         plt.subplots_adjust(wspace=0.01, hspace=0.01)
 
