@@ -1535,7 +1535,6 @@ class CCDSet(list):
         """ Loop through the images, plotting each one """
         # for i, hdu in enumerate(self):
         for i in range(ny * ncol):
-            info = plotinfo[i]
             col = i % ncol
             if col == 0:
                 row += 1
@@ -1546,26 +1545,27 @@ class CCDSet(list):
             else:
                 ax = axes[col]
             if i < len(self):
+                info = plotinfo[i]
                 print(self[i].infile)
                 self.plot_panel(self[i], info, ax=ax, mode=mode,
                                 axlabel=False, **kwargs)
+                """ Mark the position if requested """
+                if markpos:
+                    if xmark is None or ymark is None:
+                        if mode == 'xy' or mode == 'pix':
+                            imcent = (info['x_cent'], info['y_cent'])
+                            x1, y1, x2, y2 = \
+                                self[i].subim_bounds_xy(imcent, info['imsize'])
+                            xmark = info['x_cent'] - x1
+                            ymark = info['y_cent'] - y1
+                        else:
+                            xmark = 0
+                            ymark = 0
+                    ax.axhline(ymark, color=markcolor)
+                    ax.axvline(xmark, color=markcolor)
             else:
                 ax.set_axis_off()
 
-            """ Mark the a position if requested """
-            if markpos:
-                if xmark is None or ymark is None:
-                    if mode == 'xy' or mode == 'pix':
-                        imcent = (info['x_cent'], info['y_cent'])
-                        x1, y1, x2, y2 = \
-                            self[i].subim_bounds_xy(imcent, info['imsize'])
-                        xmark = info['x_cent'] - x1
-                        ymark = info['y_cent'] - y1
-                    else:
-                        xmark = 0
-                        ymark = 0
-                ax.axhline(ymark, color=markcolor)
-                ax.axvline(xmark, color=markcolor)
         plt.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005)
         plt.subplots_adjust(wspace=0.01, hspace=0.01)
 
