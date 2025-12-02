@@ -129,13 +129,16 @@ class CCDSet(list):
         else:
             raise TypeError('\nERROR: Input is not in a valid format\n')
 
-        """ """
+        """ Set up datainfo column to be filled in later """
         self.datainfo['basename'] = self.datainfo['infile'].copy()
+        self.datainfo['pixscale'] = 0.
+        self.datainfo['PA'] = 0.
 
         """ Load the data into the object """
         if verbose:
             # print('')
             print('Loading data...')
+        haswcs = False
         for f, info in zip(inlist, self.datainfo):
             if isinstance(f, (pf.PrimaryHDU, pf.ImageHDU, WcsHDU, Image)):
                 infile = f
@@ -149,6 +152,15 @@ class CCDSet(list):
                 info['basename'] = tmp.basename
             else:
                 info['basename'] = os.path.basename(info['infile'])
+            if tmp.wcsinfo is not None:
+                haswcs = True
+                if isinstance(tmp.pixscale, np.ndarray):
+                    info['pixscale'] = tmp.pixscale[0]
+                elif isinstance(tmp.pixscale, float):
+                    info['pixscale'] = tmp.pixscale
+                else:
+                    raise TypeError
+                info['PA'] = tmp.impa
             self.append(tmp)
 
         """ Put the requested information into datainfo table """
@@ -169,6 +181,13 @@ class CCDSet(list):
                 if kl != 'object' and kl != texpkey and kl != gainkey:
                     keylist.append(key)
         self.read_infokeys(keylist, texpkey=texpkey, gainkey=gainkey)
+        if haswcs:
+            keylist.append('pixscale')
+            keylist.append('PA')
+            if isinstance(self.datainfo['pixscale'][0], float):
+                self.datainfo['pixscale'].format = '%.2f'
+            if isinstance(self.datainfo['PA'][0], float):
+                self.datainfo['PA'].format = '%.2f'
 
         """ Rename special columns if they are there """
         if texpkey in keylist:
