@@ -160,7 +160,7 @@ class CCDSet(list):
                     info['pixscale'] = tmp.pixscale
                 else:
                     raise TypeError
-                info['PA'] = tmp.impa
+                info['PA'] = tmp.pa
             self.append(tmp)
 
         """ Put the requested information into datainfo table """
