@@ -36,7 +36,7 @@ class CCDSet(list):
     def __init__(self, inlist, hext=0, wcsext=None, indir=None,
                  filecol='infile', tabformat=None, infokeys=None, texpkey=None,
                  gainkey=None, wcsverb=False, prefix=None, suffix=None,
-                 verbose=True, **kwargs):
+                 print_summary=True, verbose=True, **kwargs):
         """
 
         Creates a CCDSet object by reading in the relevant data sets
@@ -207,7 +207,7 @@ class CCDSet(list):
                 self.datainfo[k].format = '%.2f'
 
         """ Summarize the inputs """
-        if verbose:
+        if print_summary and verbose:
             print('')
             self.print_summary(keylist)
 
