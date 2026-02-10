@@ -495,8 +495,8 @@ class CCDSet(list):
                   reject=None, nlow=0, nhigh=0, nsig=3.,
                   framemask=None,
                   trimsec=None, bias=None, flat=None,
-                  usegain=False, usetexp=False, normalize=None,
-                  zerosky=None, use_objmask=False, NaNmask=False,
+                  usegain=False, usetexp=False, normalize=None, skysub=None,
+                  zerosky='doNOTuse', use_objmask=False, NaNmask=False,
                   verbose=True, headverbose=True):
         """
         This is one of the primary methods of the CCDSet class.  It combines
@@ -573,9 +573,9 @@ class CCDSet(list):
                 if verbose:
                     print('    Normalizing by %f' % normfac)
 
-            """ Set the sky to zero if requested """
-            if zerosky is not None:
-                skyval = tmp.sky_to_zero(zerosky)
+            """ Subtract the sky if requested """
+            if skysub is not None:
+                skyval = tmp.sky_to_zero(skysub)
                 
             """ Put the processed data into the stack """
             stack[count] = tmp.data.copy()
@@ -985,10 +985,10 @@ class CCDSet(list):
          sky frame)
         """
         if skytype[:3] == 'add':
-            smo.imcombine(zerosky='sigclip', method='mean', reject='minmax',
+            smo.imcombine(skysub='sigclip', method='mean', reject='minmax',
                           nhigh=nhigh, outfile='%s_clipmean.fits' % outroot,
                           **kwargs)
-            smo.imcombine(zerosky='sigclip', method='median',
+            smo.imcombine(skysub='sigclip', method='median',
                           outfile='%s_median.fits' % outroot, **kwargs)
         else:
             smo.imcombine(normalize='sigclip', method='mean', reject='minmax',
@@ -1033,12 +1033,32 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
+    def make_sky(self, outroot='Sky', method='stackstats', smosize=9,
+                 smtype='median', nhigh=1, verbose=True, **kwargs):
+        """
+
+        Uses blank-sky frames to estimate the additive portion of the
+        instrumental response (as opposed to the multiplicative component,
+        which can be derived from the flat-field frames)
+
+        """
+
+        """ Do the image stacking """
+        if method == 'stackstats':
+            self._make_sky_stackstats('addsky', smosize, outroot, smtype=smtype,
+                                      nhigh=nhigh, verbose=verbose, **kwargs)
+        else:
+            raise ValueError('make_sky_from_sci - "stackstats" is the only'
+                             ' possible method at this time')
+
+    # -----------------------------------------------------------------------
+
     def make_sky_from_sci(self, outroot='Sky', method='stackstats', smosize=9,
                           smtype='median', nhigh=2, verbose=True, **kwargs):
         """
 
         Uses science frames to estimate the additive portion of the
-        instrumental response (as oppsed to the multiplicative component,
+        instrumental response (as opposed to the multiplicative component,
         which can be derived from the flat-field frames
 
         """
