@@ -63,7 +63,8 @@ class CCDSet(list):
         self.bpmglobal = None
         self.flat = None
         self.fringe = None
-        self.darkskyflat = None
+        self.darkskyflat = None  # Sky to use as correction to flat-field
+        self.sky = None  # Sky to subtract
         self.objmasks = None
         self.axlist = None
         
@@ -418,7 +419,7 @@ class CCDSet(list):
 
     # -----------------------------------------------------------------------
 
-    def load_calib(self, bias=None, flat=None, fringe=None,
+    def load_calib(self, bias=None, flat=None, fringe=None, sky=None,
                    darksky=None, bpmglob=None, caldir=None, hext=None,
                    verbose=True, headverbose=True):
         """
@@ -439,6 +440,7 @@ class CCDSet(list):
         flatdir = None
         maskdir = None
         fringedir = None
+        skydir = None
         if caldir is not None:
             if isinstance(caldir, dict):
                 if 'darkdir' in caldir.keys():
@@ -449,11 +451,14 @@ class CCDSet(list):
                     maskdir = caldir['maskdir']
                 if 'fringedir' in caldir.keys():
                     fringedir = caldir['fringedir']
+                if 'skydir' in caldir.keys():
+                    skydir = caldir['skydir']
             else:
                 darkdir = caldir
                 flatdir = caldir
                 maskdir = caldir
                 fringedir = caldir
+                skydir = caldir
             
         """ Read in calibration frames if they have been selected """
         if headverbose:
@@ -488,16 +493,117 @@ class CCDSet(list):
                                                  caldir=flatdir, hext=hext)
             if self.darkskyflat is None:
                 raise OSError('Error reading %s' % darksky)
+        if sky is not None:
+            if sky == 'sigclip' or sky == 'median':
+                self.sky = sky
+            else:
+                self.sky = self.read_calfile(sky, 'sky', caldir=skydir,
+                                             hext=hext)
+            if self.sky is None:
+                raise OSError('Error reading %s' % sky)
+
+    # -----------------------------------------------------------------------
+
+    def apply_calib(self, outfiles=None, trimsec=None, usegain=False,
+                    usetexp=False,  caldir=None, bias=None, flat=None, bpm=None,
+                    fringe=None, sky=None, darksky=None, normalize=None,
+                    flip=None, pixscale=0.0, rakey='ra', deckey='dec',
+                    verbose=True, **kwargs):
+        """
+
+        Applies calibration corrections to the frames.
+        All of the calibration steps are by default turned off (their
+         associated keywords are set to None).
+         To apply a particular calibration step, set the appropriate keyword.
+         The possible steps, along with their keywords are:
+
+          Keyword      Calibration step
+          ----------  ----------------------------------
+          bias        Bias subtraction
+          flat        Flat-field correction
+          fringe      Fringe subtraction
+          sky         Sky subtraction
+          darksky     Dark-sky flat correction
+          texp_key    Divide by exposure time (set keyword to fits header name)
+          caldir      Directory containing the calibration files.  The default
+                       value of None means that they are in the current
+                       directory
+          flip        None => no flip
+          pixscale    If >0, apply a rough WCS using this pixel scale (RA and
+                        Dec come from telescope pointing info in fits header)
+          rakey       FITS header keyword for RA of telescope pointing.
+                        Default = 'ra'
+          deckey      FITS header keyword for Dec of telescope pointing.
+                        Default = 'dec'
+
+         Required inputs:
+
+         Optional inputs (additional to those in the keyword list above):
+          trimsec - a four-element list or array: [x1, y1, x2, y2] if something
+                    smaller than the full frame is desired.  The coordinates
+                    define the lower-left (x1, y1) and upper right (x2, y2)
+                    corners of the trim section.
+
+        """
+
+        """ Read in calibration frames if they have been selected """
+        if verbose:
+            print('')
+        self.load_calib(bias=bias, flat=flat, fringe=fringe, darksky=darksky,
+                        bpmglob=bpm, sky=sky, caldir=caldir, verbose=verbose)
+
+        """ Prepare to calibrate the data """
+        if verbose:
+            print('')
+            print('Processing files...')
+            print('-------------------')
+
+        """ Loop through the frames, processing each one """
+        outlist = []
+        for i, hdu in enumerate(self):
+            if usegain:
+                gain = self.datainfo['gain'][i]
+            else:
+                gain = -1.
+            if usetexp:
+                try:
+                    texp = self.datainfo['texp'][i]
+                except KeyError:
+                    print('WARNING: No exposure time info found')
+                    texp = -1.
+            else:
+                texp = -1.
+
+            # print('gain = ', gain)
+            tmp = hdu.process_data(trimsec=trimsec, bias=self.bias,
+                                   gain=gain, texp=texp, bpm=self.bpmglobal,
+                                   flat=self.flat, fringe=self.fringe,
+                                   normalize=normalize, sky=self.sky,
+                                   darkskyflat=self.darkskyflat, flip=flip,
+                                   pixscale=pixscale, rakey=rakey,
+                                   deckey=deckey, verbose=verbose,
+                                   **kwargs)
+            if hdu.infile is not None:
+                tmp.infile = hdu.infile
+
+            if outfiles is not None:
+                tmp.writeto(outfiles[i])
+                print('   Wrote calibrated data to %s' % outfiles[i])
+            else:
+                outlist.append(tmp)
+            print('')
+
+        if outfiles is not None:
+            return None
+        else:
+            return CCDSet(outlist, verbose=False)
 
     # -----------------------------------------------------------------------
 
     def imcombine(self, outfile=None, outdir=None, outobj=None, method='median',
                   reject=None, nlow=0, nhigh=0, nsig=3.,
-                  framemask=None,
-                  trimsec=None, bias=None, flat=None,
-                  usegain=False, usetexp=False, normalize=None, skysub=None,
-                  zerosky='doNOTuse', use_objmask=False, NaNmask=False,
-                  verbose=True, headverbose=True):
+                  framemask=None, use_objmask=False, NaNmask=False,
+                  verbose=True, headverbose=True, **kwargs):
         """
         This is one of the primary methods of the CCDSet class.  It combines
         the images, perhaps after processing them first.  There are a number
@@ -508,25 +614,48 @@ class CCDSet(list):
         will do a median combination of the images, with no processing and
         no flagging.
 
+        Parameters related to the combination of the frames
+        ---------------------------------------------------
+         method      -
+         reject      -
+         nlow        -
+         nhigh       -
+         nsig        -
+         framemask   -
+         use_objmask -
+         NaNmask     -
+         verbose     -
+         headverbose -
+
+         Additional paramebers (**kwargs) for image calibration, if needed
+         ------------------------------------------------------------------
+         usegain
+         usetexp
+         caldir
+         trimsec
+         bias
+         flat
+         bpm
+         fringe
+         darksky
+         normalize   -
+         sky
+         flip
+         pixscale
+         rakey
+         deckey
+
         """
 
-        """ Load any requested calibration files """
-        self.load_calib(bias, flat, verbose=verbose, headverbose=headverbose)
-
-        """ Set some default values """
-        gain = -1
-        texp = -1
+        """ Apply any requested calibrations to the data """
+        tmpset = self.apply_calib(verbose=verbose, **kwargs)
 
         """
         Set up the container to hold the data stack that will be used to
         compute the median
         """
-        if trimsec is not None:
-            xsize = trimsec[2] - trimsec[0]
-            ysize = trimsec[3] - trimsec[1]
-        else:
-            xsize = self[0].data.shape[1]
-            ysize = self[0].data.shape[0]
+        xsize = tmpset[0].data.shape[1]
+        ysize = tmpset[0].data.shape[0]
         if framemask is not None:
             zsize = framemask.sum()
         else:
@@ -536,28 +665,17 @@ class CCDSet(list):
 
         if verbose:
             print('')
-            print('imcombine: setting up stack for images')
+            print('imcombine: combining the input images')
             print('-------------------------------------------')
             print('Stack will have dimensions (%d, %d, %d)'
                   % (zsize, ysize, xsize))
 
         """ Loop over the frames to create the stack """
         count = 0
-        for i in range(self.nfiles):
+        for i, tmp in enumerate(tmpset):
             """ Skip this frame if it's not in the frame mask """
             if not framemask[i]:
                 continue
-
-            """ Set the gain and/or exposure time if requested """
-            if usegain:
-                gain = self.datainfo['gain'][i]
-            if usetexp:
-                texp = self.datainfo['texp'][i]
-
-            """ Process the data, possibly only partially, if desired """
-            tmp = self[i].process_data(bias=self.bias, gain=gain, texp=texp,
-                                       flat=self.flat, trimsec=trimsec,
-                                       verbose=verbose)
 
             """ Mask out the objects if use_objmask is set to True """
             if use_objmask:
@@ -566,25 +684,11 @@ class CCDSet(list):
                 tmp.apply_pixmask(self.objmasks[i], badval=1)
                 NaNmask = True
 
-            """ Normalize if requested """
-            if normalize is not None:
-                mask = np.isfinite(tmp.data)
-                normfac = tmp.normalize(method=normalize, mask=mask)
-                if verbose:
-                    print('    Normalizing by %f' % normfac)
-
-            """ Subtract the sky if requested """
-            if skysub is not None:
-                skyval = tmp.sky_to_zero(skysub)
-                
             """ Put the processed data into the stack """
             stack[count] = tmp.data.copy()
             count += 1
             del tmp
         
-        if verbose:
-            print('')
-
         """ Do pixel rejection based on image statistics if requested """
         if reject is not None:
             NaNmask = True
@@ -721,101 +825,6 @@ class CCDSet(list):
         if hdu is not None:
             return hdu
     
-    # -----------------------------------------------------------------------
-
-    def apply_calib(self, outfiles=None, trimsec=None, bias=None,
-                    usegain=False, usetexp=False, flat=None, bpm=None,
-                    fringe=None,darksky=None, zerosky=None, caldir=None,
-                    flip=None,pixscale=0.0, rakey='ra', deckey='dec',
-                    verbose=True, **kwargs):
-        """
-
-        Applies calibration corrections to the frames.
-        All of the calibration steps are by default turned off (their
-         associated keywords are set to None).
-         To apply a particular calibration step, set the appropriate keyword.
-         The possible steps, along with their keywords are:
-
-          Keyword      Calibration step
-          ----------  ----------------------------------
-          bias        Bias subtraction
-          flat        Flat-field correction
-          fringe      Fringe subtraction
-          darksky     Dark-sky flat correction
-          skysub      Subtract mean sky level if keyword set to True
-          texp_key    Divide by exposure time (set keyword to fits header name)
-          caldir      Directory containing the calibration files.  The default
-                       value of None means that they are in the current
-                       directory
-          flip        None => no flip
-          pixscale    If >0, apply a rough WCS using this pixel scale (RA and
-                        Dec come from telescope pointing info in fits header)
-          rakey       FITS header keyword for RA of telescope pointing.
-                        Default = 'ra'
-          deckey      FITS header keyword for Dec of telescope pointing.
-                        Default = 'dec'
-        
-         Required inputs:
-
-         Optional inputs (additional to those in the keyword list above):
-          trimsec - a four-element list or array: [x1, y1, x2, y2] if something
-                    smaller than the full frame is desired.  The coordinates
-                    define the lower-left (x1, y1) and upper right (x2, y2)
-                    corners of the trim section.
-        
-        """
-
-        """ Read in calibration frames if they have been selected """
-        if verbose:
-            print('')
-        self.load_calib(bias, flat, fringe, darksky,
-                        bpm, caldir=caldir, verbose=verbose)
-
-        """ Prepare to calibrate the data """
-        if verbose:
-            print('')
-            print('Processing files...')
-            print('-------------------')
-
-        """ Loop through the frames, processing each one """
-        outlist = []
-        for i, hdu in enumerate(self):
-            if usegain:
-                gain = self.datainfo['gain'][i]
-            else:
-                gain = -1.
-            if usetexp:
-                try:
-                    texp = self.datainfo['texp'][i]
-                except KeyError:
-                    print('WARNING: No exposure time info found')
-                    texp = -1.
-            else:
-                texp = -1.
-
-            # print('gain = ', gain)
-            tmp = hdu.process_data(trimsec=trimsec, bias=self.bias,
-                                   gain=gain, texp=texp, bpm=self.bpmglobal,
-                                   flat=self.flat, fringe=self.fringe,
-                                   darkskyflat=self.darkskyflat,
-                                   zerosky=zerosky, flip=flip, 
-                                   pixscale=pixscale, rakey=rakey,
-                                   deckey=deckey, verbose=verbose,
-                                   **kwargs)
-            if hdu.infile is not None:
-                tmp.infile = hdu.infile
-
-            if outfiles is not None:
-                tmp.writeto(outfiles[i])
-                print('   Wrote calibrated data to %s' % outfiles[i])
-            else:
-                outlist.append(tmp)
-            print('')
-
-        if outfiles is not None:
-            return None
-        else:
-            return CCDSet(outlist)
 
         # For LRIS B
         #  x1 = [400, 51, 51, 400]
@@ -985,10 +994,10 @@ class CCDSet(list):
          sky frame)
         """
         if skytype[:3] == 'add':
-            smo.imcombine(skysub='sigclip', method='mean', reject='minmax',
+            smo.imcombine(sky='sigclip', method='mean', reject='minmax',
                           nhigh=nhigh, outfile='%s_clipmean.fits' % outroot,
                           **kwargs)
-            smo.imcombine(skysub='sigclip', method='median',
+            smo.imcombine(sky='sigclip', method='median',
                           outfile='%s_median.fits' % outroot, **kwargs)
         else:
             smo.imcombine(normalize='sigclip', method='mean', reject='minmax',
@@ -1128,7 +1137,7 @@ class CCDSet(list):
             # scalefac = np.median(data) / np.median(skyhdu.data)
             # print('Scaling sky-flat data for %s by %f' %
             #       (hdu.infile, scalefac))
-            skyhdu = self.imcombine(zerosky='sigclip', verbose=False,
+            skyhdu = self.imcombine(sky='sigclip', verbose=False,
                                     framemask=framemask, NaNmask=NaNmask,
                                     headverbose=False)
             hdu.sigma_clip()
